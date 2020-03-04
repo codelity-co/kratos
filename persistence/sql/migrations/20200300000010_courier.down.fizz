@@ -1,0 +1,3 @@
+change_column("courier_messages", "body", "string")
+change_column("courier_messages", "subject", "string")
+change_column("courier_messages", "recipient", "string")
