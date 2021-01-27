@@ -13,56 +13,104 @@ import (
 	"github.com/go-openapi/errors"
 	"github.com/go-openapi/runtime"
 	cr "github.com/go-openapi/runtime/client"
-
-	strfmt "github.com/go-openapi/strfmt"
+	"github.com/go-openapi/strfmt"
+	"github.com/go-openapi/swag"
 )
 
-// NewListIdentitiesParams creates a new ListIdentitiesParams object
-// with the default values initialized.
+// NewListIdentitiesParams creates a new ListIdentitiesParams object,
+// with the default timeout for this client.
+//
+// Default values are not hydrated, since defaults are normally applied by the API server side.
+//
+// To enforce default values in parameter, use SetDefaults or WithDefaults.
 func NewListIdentitiesParams() *ListIdentitiesParams {
-
 	return &ListIdentitiesParams{
-
 		timeout: cr.DefaultTimeout,
 	}
 }
 
 // NewListIdentitiesParamsWithTimeout creates a new ListIdentitiesParams object
-// with the default values initialized, and the ability to set a timeout on a request
+// with the ability to set a timeout on a request.
 func NewListIdentitiesParamsWithTimeout(timeout time.Duration) *ListIdentitiesParams {
-
 	return &ListIdentitiesParams{
-
 		timeout: timeout,
 	}
 }
 
 // NewListIdentitiesParamsWithContext creates a new ListIdentitiesParams object
-// with the default values initialized, and the ability to set a context for a request
+// with the ability to set a context for a request.
 func NewListIdentitiesParamsWithContext(ctx context.Context) *ListIdentitiesParams {
-
 	return &ListIdentitiesParams{
-
 		Context: ctx,
 	}
 }
 
 // NewListIdentitiesParamsWithHTTPClient creates a new ListIdentitiesParams object
-// with the default values initialized, and the ability to set a custom HTTPClient for a request
+// with the ability to set a custom HTTPClient for a request.
 func NewListIdentitiesParamsWithHTTPClient(client *http.Client) *ListIdentitiesParams {
-
 	return &ListIdentitiesParams{
 		HTTPClient: client,
 	}
 }
 
-/*ListIdentitiesParams contains all the parameters to send to the API endpoint
-for the list identities operation typically these are written to a http.Request
+/* ListIdentitiesParams contains all the parameters to send to the API endpoint
+   for the list identities operation.
+
+   Typically these are written to a http.Request.
 */
 type ListIdentitiesParams struct {
+
+	/* Page.
+
+	   Pagination Page
+
+	   Format: int64
+	*/
+	Page *int64
+
+	/* PerPage.
+
+	     Items per Page
+
+	This is the number of items per page.
+
+	     Format: int64
+	     Default: 100
+	*/
+	PerPage *int64
+
 	timeout    time.Duration
 	Context    context.Context
 	HTTPClient *http.Client
+}
+
+// WithDefaults hydrates default values in the list identities params (not the query body).
+//
+// All values with no default are reset to their zero value.
+func (o *ListIdentitiesParams) WithDefaults() *ListIdentitiesParams {
+	o.SetDefaults()
+	return o
+}
+
+// SetDefaults hydrates default values in the list identities params (not the query body).
+//
+// All values with no default are reset to their zero value.
+func (o *ListIdentitiesParams) SetDefaults() {
+	var (
+		pageDefault = int64(0)
+
+		perPageDefault = int64(100)
+	)
+
+	val := ListIdentitiesParams{
+		Page:    &pageDefault,
+		PerPage: &perPageDefault,
+	}
+
+	val.timeout = o.timeout
+	val.Context = o.Context
+	val.HTTPClient = o.HTTPClient
+	*o = val
 }
 
 // WithTimeout adds the timeout to the list identities params
@@ -98,6 +146,28 @@ func (o *ListIdentitiesParams) SetHTTPClient(client *http.Client) {
 	o.HTTPClient = client
 }
 
+// WithPage adds the page to the list identities params
+func (o *ListIdentitiesParams) WithPage(page *int64) *ListIdentitiesParams {
+	o.SetPage(page)
+	return o
+}
+
+// SetPage adds the page to the list identities params
+func (o *ListIdentitiesParams) SetPage(page *int64) {
+	o.Page = page
+}
+
+// WithPerPage adds the perPage to the list identities params
+func (o *ListIdentitiesParams) WithPerPage(perPage *int64) *ListIdentitiesParams {
+	o.SetPerPage(perPage)
+	return o
+}
+
+// SetPerPage adds the perPage to the list identities params
+func (o *ListIdentitiesParams) SetPerPage(perPage *int64) {
+	o.PerPage = perPage
+}
+
 // WriteToRequest writes these params to a swagger request
 func (o *ListIdentitiesParams) WriteToRequest(r runtime.ClientRequest, reg strfmt.Registry) error {
 
@@ -105,6 +175,40 @@ func (o *ListIdentitiesParams) WriteToRequest(r runtime.ClientRequest, reg strfm
 		return err
 	}
 	var res []error
+
+	if o.Page != nil {
+
+		// query param page
+		var qrPage int64
+
+		if o.Page != nil {
+			qrPage = *o.Page
+		}
+		qPage := swag.FormatInt64(qrPage)
+		if qPage != "" {
+
+			if err := r.SetQueryParam("page", qPage); err != nil {
+				return err
+			}
+		}
+	}
+
+	if o.PerPage != nil {
+
+		// query param per_page
+		var qrPerPage int64
+
+		if o.PerPage != nil {
+			qrPerPage = *o.PerPage
+		}
+		qPerPage := swag.FormatInt64(qrPerPage)
+		if qPerPage != "" {
+
+			if err := r.SetQueryParam("per_page", qPerPage); err != nil {
+				return err
+			}
+		}
+	}
 
 	if len(res) > 0 {
 		return errors.CompositeValidationError(res...)

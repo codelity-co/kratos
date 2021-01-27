@@ -6,15 +6,21 @@ package models
 // Editing this file might prove futile when you re-run the swagger generate command
 
 import (
+	"context"
+
 	"github.com/go-openapi/errors"
-	strfmt "github.com/go-openapi/strfmt"
+	"github.com/go-openapi/strfmt"
 	"github.com/go-openapi/swag"
 	"github.com/go-openapi/validate"
 )
 
-// Session session
+// Session Session session
+//
 // swagger:model session
 type Session struct {
+
+	// active
+	Active bool `json:"active,omitempty"`
 
 	// authenticated at
 	// Required: true
@@ -26,6 +32,11 @@ type Session struct {
 	// Format: date-time
 	ExpiresAt *strfmt.DateTime `json:"expires_at"`
 
+	// id
+	// Required: true
+	// Format: uuid4
+	ID *UUID `json:"id"`
+
 	// identity
 	// Required: true
 	Identity *Identity `json:"identity"`
@@ -34,11 +45,6 @@ type Session struct {
 	// Required: true
 	// Format: date-time
 	IssuedAt *strfmt.DateTime `json:"issued_at"`
-
-	// sid
-	// Required: true
-	// Format: uuid4
-	Sid UUID `json:"sid"`
 }
 
 // Validate validates this session
@@ -53,15 +59,15 @@ func (m *Session) Validate(formats strfmt.Registry) error {
 		res = append(res, err)
 	}
 
+	if err := m.validateID(formats); err != nil {
+		res = append(res, err)
+	}
+
 	if err := m.validateIdentity(formats); err != nil {
 		res = append(res, err)
 	}
 
 	if err := m.validateIssuedAt(formats); err != nil {
-		res = append(res, err)
-	}
-
-	if err := m.validateSid(formats); err != nil {
 		res = append(res, err)
 	}
 
@@ -92,6 +98,28 @@ func (m *Session) validateExpiresAt(formats strfmt.Registry) error {
 
 	if err := validate.FormatOf("expires_at", "body", "date-time", m.ExpiresAt.String(), formats); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func (m *Session) validateID(formats strfmt.Registry) error {
+
+	if err := validate.Required("id", "body", m.ID); err != nil {
+		return err
+	}
+
+	if err := validate.Required("id", "body", m.ID); err != nil {
+		return err
+	}
+
+	if m.ID != nil {
+		if err := m.ID.Validate(formats); err != nil {
+			if ve, ok := err.(*errors.Validation); ok {
+				return ve.ValidateName("id")
+			}
+			return err
+		}
 	}
 
 	return nil
@@ -128,13 +156,47 @@ func (m *Session) validateIssuedAt(formats strfmt.Registry) error {
 	return nil
 }
 
-func (m *Session) validateSid(formats strfmt.Registry) error {
+// ContextValidate validate this session based on the context it is used
+func (m *Session) ContextValidate(ctx context.Context, formats strfmt.Registry) error {
+	var res []error
 
-	if err := m.Sid.Validate(formats); err != nil {
-		if ve, ok := err.(*errors.Validation); ok {
-			return ve.ValidateName("sid")
+	if err := m.contextValidateID(ctx, formats); err != nil {
+		res = append(res, err)
+	}
+
+	if err := m.contextValidateIdentity(ctx, formats); err != nil {
+		res = append(res, err)
+	}
+
+	if len(res) > 0 {
+		return errors.CompositeValidationError(res...)
+	}
+	return nil
+}
+
+func (m *Session) contextValidateID(ctx context.Context, formats strfmt.Registry) error {
+
+	if m.ID != nil {
+		if err := m.ID.ContextValidate(ctx, formats); err != nil {
+			if ve, ok := err.(*errors.Validation); ok {
+				return ve.ValidateName("id")
+			}
+			return err
 		}
-		return err
+	}
+
+	return nil
+}
+
+func (m *Session) contextValidateIdentity(ctx context.Context, formats strfmt.Registry) error {
+
+	if m.Identity != nil {
+		if err := m.Identity.ContextValidate(ctx, formats); err != nil {
+			if ve, ok := err.(*errors.Validation); ok {
+				return ve.ValidateName("identity")
+			}
+			return err
+		}
 	}
 
 	return nil

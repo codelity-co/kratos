@@ -1,69 +1,55 @@
 package identity
 
 import (
-	"encoding/json"
+	"context"
 
-	"github.com/ory/jsonschema/v3"
+	"github.com/tidwall/sjson"
 
-	"github.com/ory/x/errorsx"
-
-	"github.com/ory/kratos/driver/configuration"
+	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/schema"
 )
 
 type (
 	validatorDependencies interface {
-		IdentityTraitsSchemas() schema.Schemas
+		IdentityTraitsSchemas(ctx context.Context) schema.Schemas
+		config.Provider
 	}
 	Validator struct {
 		v *schema.Validator
 		d validatorDependencies
-		c configuration.Provider
 	}
 	ValidationProvider interface {
 		IdentityValidator() *Validator
 	}
 )
 
-func NewValidator(d validatorDependencies, c configuration.Provider) *Validator {
-	return &Validator{
-		v: schema.NewValidator(),
-		d: d,
-		c: c,
-	}
+func NewValidator(d validatorDependencies) *Validator {
+	return &Validator{v: schema.NewValidator(), d: d}
 }
 
-func (v *Validator) ValidateWithRunner(i *Identity, runners ...schema.Extension) error {
-	runner, err := schema.NewExtensionRunner(
-		schema.ExtensionRunnerIdentityMetaSchema,
-		runners...,
-	)
+func (v *Validator) ValidateWithRunner(ctx context.Context, i *Identity, runners ...schema.Extension) error {
+	runner, err := schema.NewExtensionRunner(schema.ExtensionRunnerIdentityMetaSchema, runners...)
 	if err != nil {
 		return err
 	}
 
-	s, err := v.d.IdentityTraitsSchemas().GetByID(i.TraitsSchemaID)
+	s, err := v.d.IdentityTraitsSchemas(ctx).GetByID(i.SchemaID)
 	if err != nil {
 		return err
 	}
 
-	err = v.v.Validate(
-		s.URL.String(),
-		json.RawMessage(i.Traits),
-		schema.WithExtensionRunner(runner),
-	)
-
-	switch e := errorsx.Cause(err).(type) {
-	case *jsonschema.ValidationError:
-		return schema.ContextSetRoot(e, "traits")
+	traits, err := sjson.SetRawBytes([]byte(`{}`), "traits", i.Traits)
+	if err != nil {
+		return err
 	}
 
-	return err
+	return v.v.Validate(s.URL.String(), traits, schema.WithExtensionRunner(runner))
 }
 
-func (v *Validator) Validate(i *Identity) error {
-	return v.ValidateWithRunner(i,
+func (v *Validator) Validate(ctx context.Context, i *Identity) error {
+	return v.ValidateWithRunner(ctx, i,
 		NewSchemaExtensionCredentials(i),
-		NewSchemaExtensionVerify(i, v.c.SelfServiceVerificationLinkLifespan()),
+		NewSchemaExtensionVerification(i, v.d.Config(ctx).SelfServiceFlowVerificationRequestLifespan()),
+		NewSchemaExtensionRecovery(i),
 	)
 }

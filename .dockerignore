@@ -1,4 +1,4 @@
-docs/adopters
+docs
 .releaser
 .github
 .circleci
@@ -8,4 +8,9 @@ scripts
 .git/
 database.yaml
 contrib/quickstart
-contrib/swagutil
+node_modules/
+./quickstart.yml
+./quickstart-*.yml
+.bin/
+test/
+pgked.go

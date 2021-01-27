@@ -10,11 +10,12 @@ import (
 	"github.com/cenkalti/backoff"
 	"github.com/gofrs/uuid"
 	"github.com/pkg/errors"
-	"gopkg.in/gomail.v2"
 
-	"github.com/ory/x/errorsx"
+	"github.com/ory/herodot"
 
-	"github.com/ory/kratos/driver/configuration"
+	gomail "github.com/ory/mail/v3"
+
+	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/x"
 )
 
@@ -24,31 +25,42 @@ type (
 		x.LoggingProvider
 	}
 	Courier struct {
-		dialer *gomail.Dialer
+		Dialer *gomail.Dialer
 		d      smtpDependencies
-		c      configuration.Provider
+		c      *config.Config
 	}
 	Provider interface {
 		Courier() *Courier
 	}
 )
 
-func NewSMTP(d smtpDependencies, c configuration.Provider) *Courier {
+func NewSMTP(d smtpDependencies, c *config.Config) *Courier {
 	uri := c.CourierSMTPURL()
-	sslSkipVerify, _ := strconv.ParseBool(uri.Query().Get("skip_ssl_verify"))
 	password, _ := uri.User.Password()
 	port, _ := strconv.ParseInt(uri.Port(), 10, 64)
+
+	var ssl bool
+	var tlsConfig *tls.Config
+	if uri.Scheme == "smtps" {
+		ssl = true
+		sslSkipVerify, _ := strconv.ParseBool(uri.Query().Get("skip_ssl_verify"))
+		// #nosec G402 This is ok (and required!) because it is configurable and disabled by default.
+		tlsConfig = &tls.Config{InsecureSkipVerify: sslSkipVerify, ServerName: uri.Hostname()}
+	}
+
 	return &Courier{
 		d: d,
 		c: c,
-		dialer: &gomail.Dialer{
-			Host:     uri.Hostname(),
-			Port:     int(port),
-			Username: uri.User.Username(),
-			Password: password,
-			SSL:      uri.Scheme == "smtps",
-			/* #nosec we need to support SMTP servers wihout TLS */
-			TLSConfig: &tls.Config{InsecureSkipVerify: sslSkipVerify},
+		Dialer: &gomail.Dialer{
+			/* #nosec we need to support SMTP servers without TLS */
+			TLSConfig:    tlsConfig,
+			Host:         uri.Hostname(),
+			Port:         int(port),
+			Username:     uri.User.Username(),
+			Password:     password,
+			SSL:          ssl,
+			Timeout:      time.Second * 10,
+			RetryFailure: true,
 		},
 	}
 }
@@ -90,6 +102,9 @@ func (m *Courier) Work(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil
+		}
 		return ctx.Err()
 	case err := <-errChan:
 		return err
@@ -99,14 +114,17 @@ func (m *Courier) Work(ctx context.Context) error {
 func (m *Courier) watchMessages(ctx context.Context, errChan chan error) {
 	for {
 		if err := backoff.Retry(func() error {
+			if len(m.Dialer.Host) == 0 {
+				return errors.WithStack(herodot.ErrInternalServerError.WithReasonf("Courier tried to deliver an email but courier.smtp_url is not set!"))
+			}
+
 			messages, err := m.d.CourierPersister().NextMessages(ctx, 10)
 			if err != nil {
-				if errorsx.Cause(err) == ErrQueueEmpty {
+				if errors.Is(err, ErrQueueEmpty) {
 					return nil
 				}
 				return err
 			}
-
 			for k := range messages {
 				var msg = messages[k]
 
@@ -120,11 +138,11 @@ func (m *Courier) watchMessages(ctx context.Context, errChan chan error) {
 					gm.SetBody("text/plain", msg.Body)
 					gm.AddAlternative("text/html", msg.Body)
 
-					if err := m.dialer.DialAndSend(gm); err != nil {
+					if err := m.Dialer.DialAndSend(ctx, gm); err != nil {
 						m.d.Logger().
 							WithError(err).
-							WithField("smtp_server", fmt.Sprintf("%s:%d", m.dialer.Host, m.dialer.Port)).
-							WithField("smtp_ssl_enabled", m.dialer.SSL).
+							WithField("smtp_server", fmt.Sprintf("%s:%d", m.Dialer.Host, m.Dialer.Port)).
+							WithField("smtp_ssl_enabled", m.Dialer.SSL).
 							// WithField("email_to", msg.Recipient).
 							WithField("message_from", from).
 							Error("Unable to send email using SMTP connection.")

@@ -3,9 +3,9 @@ package identity
 import (
 	"context"
 	"reflect"
-	"time"
 
 	"github.com/gofrs/uuid"
+
 	"github.com/mohae/deepcopy"
 	"github.com/pkg/errors"
 
@@ -14,7 +14,6 @@ import (
 	"github.com/ory/x/errorsx"
 
 	"github.com/ory/kratos/courier"
-	"github.com/ory/kratos/driver/configuration"
 )
 
 var ErrProtectedFieldModified = herodot.ErrForbidden.
@@ -31,25 +30,29 @@ type (
 	}
 	Manager struct {
 		r managerDependencies
-		c configuration.Provider
 	}
 
 	managerOptions struct {
-		ExposeValidationErrors bool
+		ExposeValidationErrors    bool
+		AllowWriteProtectedTraits bool
 	}
 
-	managerOption func(*managerOptions)
+	ManagerOption func(*managerOptions)
 )
 
-func NewManager(r managerDependencies, c configuration.Provider) *Manager {
-	return &Manager{r: r, c: c}
+func NewManager(r managerDependencies) *Manager {
+	return &Manager{r: r}
 }
 
-func ManagerExposeValidationErrors(options *managerOptions) {
+func ManagerExposeValidationErrorsForInternalTypeAssertion(options *managerOptions) {
 	options.ExposeValidationErrors = true
 }
 
-func newManagerOptions(opts []managerOption) *managerOptions {
+func ManagerAllowWriteProtectedTraits(options *managerOptions) {
+	options.AllowWriteProtectedTraits = true
+}
+
+func newManagerOptions(opts []ManagerOption) *managerOptions {
 	var o managerOptions
 	for _, f := range opts {
 		f(&o)
@@ -57,64 +60,94 @@ func newManagerOptions(opts []managerOption) *managerOptions {
 	return &o
 }
 
-func (m *Manager) Create(ctx context.Context, i *Identity, opts ...managerOption) error {
+func (m *Manager) Create(ctx context.Context, i *Identity, opts ...ManagerOption) error {
 	o := newManagerOptions(opts)
-	if err := m.validate(i, o); err != nil {
+	if err := m.validate(ctx, i, o); err != nil {
 		return err
 	}
 
 	return m.r.IdentityPool().(PrivilegedPool).CreateIdentity(ctx, i)
 }
 
-func (m *Manager) Update(ctx context.Context, i *Identity, opts ...managerOption) error {
+func (m *Manager) requiresPrivilegedAccess(_ context.Context, original, updated *Identity, o *managerOptions) error {
+	if !o.AllowWriteProtectedTraits {
+		if !CredentialsEqual(updated.Credentials, original.Credentials) {
+			// reset the identity
+			*updated = *original
+			return errors.WithStack(ErrProtectedFieldModified)
+		}
+
+		if !reflect.DeepEqual(original.VerifiableAddresses, updated.VerifiableAddresses) &&
+			/* prevent nil != []string{} */
+			len(original.VerifiableAddresses)+len(updated.VerifiableAddresses) != 0 {
+			// reset the identity
+			*updated = *original
+			return errors.WithStack(ErrProtectedFieldModified)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) Update(ctx context.Context, updated *Identity, opts ...ManagerOption) error {
 	o := newManagerOptions(opts)
-	if err := m.validate(i, o); err != nil {
+	if err := m.validate(ctx, updated, o); err != nil {
 		return err
 	}
 
-	return m.r.IdentityPool().(PrivilegedPool).UpdateIdentity(ctx, i)
-}
-
-func (m *Manager) UpdateUnprotectedTraits(ctx context.Context, id uuid.UUID, traits Traits, opts ...managerOption) error {
-	o := newManagerOptions(opts)
-
-	identity, err := m.r.IdentityPool().(PrivilegedPool).GetIdentityConfidential(ctx, id)
+	original, err := m.r.IdentityPool().(PrivilegedPool).GetIdentityConfidential(ctx, updated.ID)
 	if err != nil {
 		return err
 	}
 
-	original := deepcopy.Copy(identity).(*Identity)
-	identity.Traits = traits
-	if err := m.validate(identity, o); err != nil {
+	if err := m.requiresPrivilegedAccess(ctx, original, updated, o); err != nil {
 		return err
 	}
 
-	if !CredentialsEqual(identity.Credentials, original.Credentials) {
-		return errors.WithStack(ErrProtectedFieldModified)
-	}
-
-	if !reflect.DeepEqual(original.Addresses, identity.Addresses) &&
-		/* prevent nil != []string{} */
-		len(original.Addresses)+len(identity.Addresses) != 0 {
-		return errors.WithStack(ErrProtectedFieldModified)
-	}
-
-	return m.r.IdentityPool().(PrivilegedPool).UpdateIdentity(ctx, identity)
+	return m.r.IdentityPool().(PrivilegedPool).UpdateIdentity(ctx, updated)
 }
 
-func (m *Manager) RefreshVerifyAddress(ctx context.Context, address *VerifiableAddress) error {
-	code, err := NewVerifyCode()
+func (m *Manager) UpdateSchemaID(ctx context.Context, id uuid.UUID, schemaID string, opts ...ManagerOption) error {
+	o := newManagerOptions(opts)
+	original, err := m.r.IdentityPool().(PrivilegedPool).GetIdentityConfidential(ctx, id)
 	if err != nil {
 		return err
 	}
 
-	address.Code = code
-	address.ExpiresAt = time.Now().UTC().Add(m.c.SelfServiceVerificationLinkLifespan())
-	return m.r.IdentityPool().(PrivilegedPool).UpdateVerifiableAddress(ctx, address)
+	if !o.AllowWriteProtectedTraits && original.SchemaID != schemaID {
+		return errors.WithStack(ErrProtectedFieldModified)
+	}
+
+	original.SchemaID = schemaID
+	if err := m.validate(ctx, original, o); err != nil {
+		return err
+	}
+
+	return m.r.IdentityPool().(PrivilegedPool).UpdateIdentity(ctx, original)
 }
 
-func (m *Manager) validate(i *Identity, o *managerOptions) error {
-	if err := m.r.IdentityValidator().Validate(i); err != nil {
+func (m *Manager) UpdateTraits(ctx context.Context, id uuid.UUID, traits Traits, opts ...ManagerOption) error {
+	o := newManagerOptions(opts)
+	original, err := m.r.IdentityPool().(PrivilegedPool).GetIdentityConfidential(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	// original is used to check whether protected traits were modified
+	updated := deepcopy.Copy(original).(*Identity)
+	updated.Traits = traits
+	if err := m.validate(ctx, updated, o); err != nil {
+		return err
+	}
+
+	if err := m.requiresPrivilegedAccess(ctx, original, updated, o); err != nil {
+		return err
+	}
+
+	return m.r.IdentityPool().(PrivilegedPool).UpdateIdentity(ctx, updated)
+}
+
+func (m *Manager) validate(ctx context.Context, i *Identity, o *managerOptions) error {
+	if err := m.r.IdentityValidator().Validate(ctx, i); err != nil {
 		if _, ok := errorsx.Cause(err).(*jsonschema.ValidationError); ok && !o.ExposeValidationErrors {
 			return errors.WithStack(herodot.ErrBadRequest.WithReasonf("%s", err))
 		}

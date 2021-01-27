@@ -1,25 +1,26 @@
 package registration_test
 
 import (
-	"fmt"
+	"context"
+	"encoding/json"
+	"io/ioutil"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
-	"github.com/ory/viper"
+	"github.com/ory/x/assertx"
 
-	"github.com/ory/kratos/driver/configuration"
+	"github.com/ory/kratos/driver/config"
+	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/internal"
-	"github.com/ory/kratos/selfservice/errorx"
+	"github.com/ory/kratos/internal/testhelpers"
+	"github.com/ory/kratos/selfservice/flow"
 	"github.com/ory/kratos/selfservice/flow/registration"
-	"github.com/ory/kratos/selfservice/strategy/oidc"
-	"github.com/ory/kratos/selfservice/strategy/password"
-	"github.com/ory/kratos/session"
 	"github.com/ory/kratos/x"
 )
 
@@ -27,70 +28,124 @@ func init() {
 	internal.RegisterFakes()
 }
 
-func TestEnsureSessionRedirect(t *testing.T) {
-	_, reg := internal.NewRegistryDefault(t)
+func TestHandlerRedirectOnAuthenticated(t *testing.T) {
+	conf, reg := internal.NewFastRegistryWithMocks(t)
 
 	router := x.NewRouterPublic()
-	reg.RegistrationHandler().RegisterPublicRoutes(router)
-	reg.RegistrationStrategies().RegisterPublicRoutes(router)
-	ts := httptest.NewServer(router)
-	defer ts.Close()
+	ts, _ := testhelpers.NewKratosServerWithRouters(t, reg, router, x.NewRouterAdmin())
 
-	redirTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("already authenticated"))
-	}))
-	defer redirTS.Close()
+	redirTS := testhelpers.NewRedirTS(t, "already authenticated", conf)
+	conf.MustSet(config.ViperKeyDefaultIdentitySchemaURL, "file://./stub/identity.schema.json")
 
-	viper.Set(configuration.ViperKeyURLsDefaultReturnTo, redirTS.URL)
-	viper.Set(configuration.ViperKeyURLsSelfPublic, ts.URL)
-	viper.Set(configuration.ViperKeyDefaultIdentityTraitsSchemaURL, "file://./stub/registration.schema.json")
+	t.Run("does redirect to default on authenticated request", func(t *testing.T) {
+		body, res := testhelpers.MockMakeAuthenticatedRequest(t, reg, conf, router.Router, x.NewTestHTTPRequest(t, "GET", ts.URL+registration.RouteInitBrowserFlow, nil))
+		assert.Contains(t, res.Request.URL.String(), redirTS.URL)
+		assert.EqualValues(t, "already authenticated", string(body))
+	})
 
-	for k, tc := range [][]string{
-		{"GET", registration.BrowserRegistrationPath},
-
-		{"POST", password.RegistrationPath},
-
-		// it is ok that these contain the parameters as arw strings as we are only interested in checking if the middleware is working
-		{"POST", oidc.AuthPath},
-		{"GET", oidc.AuthPath},
-		{"GET", oidc.CallbackPath},
-	} {
-		t.Run(fmt.Sprintf("case=%d/method=%s/path=%s", k, tc[0], tc[1]), func(t *testing.T) {
-			body, _ := session.MockMakeAuthenticatedRequest(t, reg, router.Router, x.NewTestHTTPRequest(t, tc[0], ts.URL+tc[1], nil))
-			assert.EqualValues(t, "already authenticated", string(body))
-		})
-	}
+	t.Run("does redirect to default on authenticated request", func(t *testing.T) {
+		body, res := testhelpers.MockMakeAuthenticatedRequest(t, reg, conf, router.Router, x.NewTestHTTPRequest(t, "GET", ts.URL+registration.RouteInitAPIFlow, nil))
+		assert.Contains(t, res.Request.URL.String(), registration.RouteInitAPIFlow)
+		assertx.EqualAsJSON(t, registration.ErrAlreadyLoggedIn, json.RawMessage(gjson.GetBytes(body, "error").Raw))
+	})
 }
 
-func TestRegistrationHandler(t *testing.T) {
-	_, reg := internal.NewRegistryDefault(t)
+func TestInitFlow(t *testing.T) {
+	conf, reg := internal.NewFastRegistryWithMocks(t)
+	conf.MustSet(config.ViperKeySelfServiceStrategyConfig+"."+string(identity.CredentialsTypePassword),
+		map[string]interface{}{"enabled": true})
 
-	public, admin := func() (*httptest.Server, *httptest.Server) {
-		public := x.NewRouterPublic()
-		admin := x.NewRouterAdmin()
-		reg.RegistrationHandler().RegisterPublicRoutes(public)
-		reg.RegistrationHandler().RegisterAdminRoutes(admin)
-		reg.RegistrationStrategies().RegisterPublicRoutes(public)
-		return httptest.NewServer(x.NewTestCSRFHandler(public)), httptest.NewServer(admin)
-	}()
-	defer public.Close()
-	defer admin.Close()
+	router := x.NewRouterPublic()
+	publicTS, _ := testhelpers.NewKratosServerWithRouters(t, reg, router, x.NewRouterAdmin())
+	registrationTS := testhelpers.NewRegistrationUIFlowEchoServer(t, reg)
 
-	redirTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer redirTS.Close()
+	conf.MustSet(config.ViperKeySelfServiceBrowserDefaultReturnTo, "https://www.ory.sh")
+	conf.MustSet(config.ViperKeyDefaultIdentitySchemaURL, "file://./stub/login.schema.json")
+
+	assertion := func(body []byte, isForced, isApi bool) {
+		if isApi {
+			assert.Equal(t, "api", gjson.GetBytes(body, "type").String())
+		} else {
+			assert.Equal(t, "browser", gjson.GetBytes(body, "type").String())
+		}
+	}
+
+	initAuthenticatedFlow := func(t *testing.T, isAPI bool) (*http.Response, []byte) {
+		route := registration.RouteInitBrowserFlow
+		if isAPI {
+			route = registration.RouteInitAPIFlow
+		}
+		req := x.NewTestHTTPRequest(t, "GET", publicTS.URL+route, nil)
+		body, res := testhelpers.MockMakeAuthenticatedRequest(t, reg, conf, router.Router, req)
+		if isAPI {
+			assert.Len(t, res.Header.Get("Set-Cookie"), 0)
+		}
+		return res, body
+	}
+
+	initFlow := func(t *testing.T, isAPI bool) (*http.Response, []byte) {
+		route := registration.RouteInitBrowserFlow
+		if isAPI {
+			route = registration.RouteInitAPIFlow
+		}
+		c := publicTS.Client()
+		res, err := c.Get(publicTS.URL + route)
+		require.NoError(t, err)
+		if isAPI {
+			assert.Len(t, res.Header.Get("Set-Cookie"), 0)
+		}
+		defer res.Body.Close()
+		body, err := ioutil.ReadAll(res.Body)
+		require.NoError(t, err)
+		return res, body
+	}
+
+	t.Run("flow=api", func(t *testing.T) {
+		t.Run("case=creates a new flow on unauthenticated request", func(t *testing.T) {
+			res, body := initFlow(t, true)
+			assert.Contains(t, res.Request.URL.String(), registration.RouteInitAPIFlow)
+			assertion(body, false, true)
+		})
+
+		t.Run("case=fails on authenticated request", func(t *testing.T) {
+			res, body := initAuthenticatedFlow(t, true)
+			assert.Equal(t, http.StatusBadRequest, res.StatusCode)
+			assertx.EqualAsJSON(t, registration.ErrAlreadyLoggedIn, json.RawMessage(gjson.GetBytes(body, "error").Raw), "%s", body)
+		})
+	})
+
+	t.Run("flow=browser", func(t *testing.T) {
+		t.Run("case=does not set forced flag on unauthenticated request", func(t *testing.T) {
+			res, body := initFlow(t, false)
+			assertion(body, false, false)
+			assert.Contains(t, res.Request.URL.String(), registrationTS.URL)
+		})
+		t.Run("case=does not set forced flag on authenticated request with refresh=false", func(t *testing.T) {
+			res, _ := initAuthenticatedFlow(t, false)
+			assert.Contains(t, res.Request.URL.String(), "https://www.ory.sh")
+		})
+	})
+}
+
+func TestGetFlow(t *testing.T) {
+	conf, reg := internal.NewFastRegistryWithMocks(t)
+	conf.MustSet(config.ViperKeyDefaultIdentitySchemaURL, "file://./stub/registration.schema.json")
+
+	public, admin := testhelpers.NewKratosServerWithCSRF(t, reg)
+	_ = testhelpers.NewErrorTestServer(t, reg)
+	_ = testhelpers.NewRedirTS(t, "", conf)
 
 	newRegistrationTS := func(t *testing.T, upstream string, c *http.Client) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if c == nil {
 				c = http.DefaultClient
 			}
-			_, _ = w.Write(x.EasyGetBody(t, c, upstream+registration.BrowserRegistrationRequestsPath+"?request="+r.URL.Query().Get("request")))
+			_, err := w.Write(x.EasyGetBody(t, c, upstream+registration.RouteGetFlow+"?id="+r.URL.Query().Get("flow")))
+			require.NoError(t, err)
 		}))
 	}
 
-	assertRequestPayload := func(t *testing.T, body []byte) {
+	assertFlowPayload := func(t *testing.T, body []byte) {
 		assert.Equal(t, "password", gjson.GetBytes(body, "methods.password.method").String(), "%s", body)
 		assert.NotEmpty(t, gjson.GetBytes(body, "methods.password.config.fields.#(name==csrf_token).value").String(), "%s", body)
 		assert.NotEmpty(t, gjson.GetBytes(body, "id").String(), "%s", body)
@@ -99,44 +154,46 @@ func TestRegistrationHandler(t *testing.T) {
 		assert.Contains(t, gjson.GetBytes(body, "methods.password.config.action").String(), public.URL, "%s", body)
 	}
 
-	errTS := errorx.NewErrorTestServer(t, reg)
-	defer errTS.Close()
+	assertExpiredPayload := func(t *testing.T, res *http.Response, body []byte) {
+		assert.EqualValues(t, http.StatusGone, res.StatusCode)
+		assert.Equal(t, public.URL+registration.RouteInitBrowserFlow, gjson.GetBytes(body, "error.details.redirect_to").String(), "%s", body)
+	}
 
-	viper.Set(configuration.ViperKeyURLsSelfPublic, public.URL)
-	viper.Set(configuration.ViperKeyDefaultIdentityTraitsSchemaURL, "file://./stub/registration.schema.json")
-	viper.Set(configuration.ViperKeyURLsError, errTS.URL)
+	newExpiredFlow := func() *registration.Flow {
+		return &registration.Flow{
+			ID:         x.NewUUID(),
+			ExpiresAt:  time.Now().Add(-time.Minute),
+			IssuedAt:   time.Now().Add(-time.Minute * 2),
+			RequestURL: public.URL + registration.RouteInitBrowserFlow,
+			CSRFToken:  x.FakeCSRFToken,
+			Type:       flow.TypeBrowser,
+		}
+	}
+
+	run := func(t *testing.T, endpoint *httptest.Server) {
+		registrationTS := newRegistrationTS(t, endpoint.URL, nil)
+		defer registrationTS.Close()
+		conf.MustSet(config.ViperKeySelfServiceRegistrationUI, registrationTS.URL)
+		conf.MustSet(config.ViperKeySelfServiceStrategyConfig+"."+string(identity.CredentialsTypePassword),
+			map[string]interface{}{"enabled": true})
+
+		t.Run("case=valid", func(t *testing.T) {
+			assertFlowPayload(t, x.EasyGetBody(t, endpoint.Client(), public.URL+registration.RouteInitBrowserFlow))
+		})
+
+		t.Run("case=expired", func(t *testing.T) {
+			lr := newExpiredFlow()
+			require.NoError(t, reg.RegistrationFlowPersister().CreateRegistrationFlow(context.Background(), lr))
+			res, body := x.EasyGet(t, admin.Client(), endpoint.URL+registration.RouteGetFlow+"?id="+lr.ID.String())
+			assertExpiredPayload(t, res, body)
+		})
+	}
 
 	t.Run("daemon=admin", func(t *testing.T) {
-		regTS := newRegistrationTS(t, admin.URL, nil)
-		defer regTS.Close()
-
-		viper.Set(configuration.ViperKeyURLsRegistration, regTS.URL)
-		assertRequestPayload(t, x.EasyGetBody(t, public.Client(), public.URL+registration.BrowserRegistrationPath))
+		run(t, admin)
 	})
 
 	t.Run("daemon=public", func(t *testing.T) {
-		t.Run("case=with_csrf", func(t *testing.T) {
-			j, err := cookiejar.New(nil)
-			require.NoError(t, err)
-			hc := &http.Client{Jar: j}
-
-			regTS := newRegistrationTS(t, public.URL, hc)
-			defer regTS.Close()
-			viper.Set(configuration.ViperKeyURLsRegistration, regTS.URL)
-
-			body := x.EasyGetBody(t, hc, public.URL+registration.BrowserRegistrationPath)
-			assertRequestPayload(t, body)
-		})
-
-		t.Run("case=without_csrf", func(t *testing.T) {
-			regTS := newRegistrationTS(t, public.URL,
-				// using a different client because it doesn't have access to the cookie jar
-				new(http.Client))
-			defer regTS.Close()
-			viper.Set(configuration.ViperKeyURLsRegistration, regTS.URL)
-
-			body := x.EasyGetBody(t, new(http.Client), public.URL+registration.BrowserRegistrationPath)
-			assert.Contains(t, gjson.GetBytes(body, "error").String(), "csrf_token", "%s", body)
-		})
+		run(t, public)
 	})
 }

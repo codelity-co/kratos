@@ -3,19 +3,21 @@ package schema
 import (
 	"bytes"
 	"encoding/json"
+	"path"
 
-	"github.com/gobuffalo/packr/v2"
+	"github.com/ory/x/pkgerx"
+
+	"github.com/markbates/pkger"
 	"github.com/pkg/errors"
 
 	"github.com/ory/jsonschema/v3"
 )
 
-var box = packr.New("contrib", "contrib")
+var schemas = pkger.Dir("github.com/ory/kratos:/schema/.schema")
 
 const (
 	ExtensionRunnerIdentityMetaSchema ExtensionRunnerMetaSchema = "extension/identity.schema.json"
-	ExtensionRunnerOIDCMetaSchema     ExtensionRunnerMetaSchema = "extension/oidc.schema.json"
-	extensionName                                               = "ory.sh/kratos"
+	extensionName                     string                    = "ory.sh/kratos"
 )
 
 type (
@@ -29,6 +31,9 @@ type (
 		Verification struct {
 			Via string `json:"via"`
 		} `json:"verification"`
+		Recovery struct {
+			Via string `json:"via"`
+		} `json:"recovery"`
 		Mappings struct {
 			Identity struct {
 				Traits []struct {
@@ -54,13 +59,13 @@ type (
 
 func NewExtensionRunner(meta ExtensionRunnerMetaSchema, runners ...Extension) (*ExtensionRunner, error) {
 	var err error
-	schema, err := box.FindString(string(meta))
+	schema, err := pkgerx.Read(pkger.Open(path.Join(string(schemas), string(meta))))
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
 
 	r := new(ExtensionRunner)
-	r.meta, err = jsonschema.CompileString(string(meta), schema)
+	r.meta, err = jsonschema.CompileString(string(meta), string(schema))
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}

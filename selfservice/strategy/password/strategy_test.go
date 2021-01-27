@@ -1,62 +1,107 @@
 package password_test
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ory/kratos/selfservice/errorx"
+	"github.com/ory/kratos/driver/config"
+	"github.com/ory/kratos/identity"
+	"github.com/ory/kratos/internal"
+	"github.com/ory/kratos/selfservice/strategy/password"
 	"github.com/ory/kratos/session"
 	"github.com/ory/kratos/x"
 )
 
-func newErrTs(t *testing.T, reg interface {
-	errorx.PersistenceProvider
-	x.WriterProvider
-}) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		e, err := reg.SelfServiceErrorPersister().Read(r.Context(), x.ParseUUID(r.URL.Query().Get("error")))
-		require.NoError(t, err)
-		reg.Writer().Write(w, r, e.Errors)
-	}))
-}
-
 func newReturnTs(t *testing.T, reg interface {
 	session.ManagementProvider
 	x.WriterProvider
+	config.Provider
 }) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sess, err := reg.SessionManager().FetchFromRequest(r.Context(), w, r)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sess, err := reg.SessionManager().FetchFromRequest(r.Context(), r)
 		require.NoError(t, err)
 		reg.Writer().Write(w, r, sess)
 	}))
+	t.Cleanup(ts.Close)
+	reg.Config(context.Background()).MustSet(config.ViperKeySelfServiceBrowserDefaultReturnTo, ts.URL+"/return-ts")
+	return ts
 }
 
-func hookConfig(u string) (m []map[string]interface{}) {
-	var b bytes.Buffer
-	if _, err := fmt.Fprintf(&b, `[
-	{
-		"job": "session"
-	},
-	{
-		"job": "redirect",
-		"config": {
-          "default_redirect_url": "%s",
-          "allow_user_defined_redirect": true
-		}
-	}
-]`, u); err != nil {
-		panic(err)
-	}
+func TestCountActiveCredentials(t *testing.T) {
+	_, reg := internal.NewFastRegistryWithMocks(t)
+	strategy := password.NewStrategy(reg)
 
-	if err := json.NewDecoder(&b).Decode(&m); err != nil {
-		panic(err)
-	}
+	hash, err := reg.Hasher().Generate(context.Background(), []byte("a password"))
+	require.NoError(t, err)
 
-	return m
+	for k, tc := range []struct {
+		in       identity.CredentialsCollection
+		expected int
+	}{
+		{
+			in: identity.CredentialsCollection{{
+				Type:   strategy.ID(),
+				Config: []byte{},
+			}},
+			expected: 0,
+		},
+		{
+			in: identity.CredentialsCollection{{
+				Type:   strategy.ID(),
+				Config: []byte(`{"hashed_password": "` + string(hash) + `"}`),
+			}},
+			expected: 0,
+		},
+		{
+			in: identity.CredentialsCollection{{
+				Type:        strategy.ID(),
+				Identifiers: []string{""},
+				Config:      []byte(`{"hashed_password": "` + string(hash) + `"}`),
+			}},
+			expected: 0,
+		},
+		{
+			in: identity.CredentialsCollection{{
+				Type:        strategy.ID(),
+				Identifiers: []string{"foo"},
+				Config:      []byte(`{"hashed_password": "` + string(hash) + `"}`),
+			}},
+			expected: 1,
+		},
+		{
+			in: identity.CredentialsCollection{{
+				Type:   strategy.ID(),
+				Config: []byte(`{"hashed_password": "asdf"}`),
+			}},
+			expected: 0,
+		},
+		{
+			in: identity.CredentialsCollection{{
+				Type:   strategy.ID(),
+				Config: []byte(`{}`),
+			}},
+			expected: 0,
+		},
+		{
+			in:       identity.CredentialsCollection{{}, {}},
+			expected: 0,
+		},
+	} {
+		t.Run(fmt.Sprintf("case=%d", k), func(t *testing.T) {
+			cc := map[identity.CredentialsType]identity.Credentials{}
+			for _, c := range tc.in {
+				cc[c.Type] = c
+			}
+
+			actual, err := strategy.CountActiveCredentials(cc)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expected, actual)
+		})
+	}
 }

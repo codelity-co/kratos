@@ -1,6 +1,7 @@
 package identity_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,9 +11,7 @@ import (
 	"github.com/julienschmidt/httprouter"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ory/viper"
-
-	"github.com/ory/kratos/driver/configuration"
+	"github.com/ory/kratos/driver/config"
 	. "github.com/ory/kratos/identity"
 	"github.com/ory/kratos/internal"
 )
@@ -29,19 +28,25 @@ func TestSchemaValidator(t *testing.T) {
   "title": "Person",
   "type": "object",
   "properties": {
-    "` + ps.ByName("name") + `": {
-      "type": "string",
-      "description": "The person's first name."
-    },
-    "lastName": {
-      "type": "string",
-      "description": "The person's last name."
-    },
-    "age": {
-      "description": "Age in years which must be equal to or greater than zero.",
-      "type": "integer",
-      "minimum": 1
-    }
+	"traits": {
+	  "type": "object",
+	  "properties": {
+        "` + ps.ByName("name") + `": {
+          "type": "string",
+          "description": "The person's first name."
+        },
+        "lastName": {
+          "type": "string",
+          "description": "The person's last name."
+        },
+        "age": {
+          "description": "Age in years which must be equal to or greater than zero.",
+          "type": "integer",
+          "minimum": 1
+        }
+	  },
+	  "additionalProperties": false
+	}
   },
   "additionalProperties": false
 }`))
@@ -50,13 +55,13 @@ func TestSchemaValidator(t *testing.T) {
 	ts := httptest.NewServer(router)
 	defer ts.Close()
 
-	conf, reg := internal.NewRegistryDefault(t)
-	viper.Set(configuration.ViperKeyDefaultIdentityTraitsSchemaURL, ts.URL+"/schema/firstName")
-	viper.Set(configuration.ViperKeyIdentityTraitsSchemas, []configuration.SchemaConfig{
+	conf, reg := internal.NewFastRegistryWithMocks(t)
+	conf.MustSet(config.ViperKeyDefaultIdentitySchemaURL, ts.URL+"/schema/firstName")
+	conf.MustSet(config.ViperKeyIdentitySchemas, []config.Schema{
 		{ID: "whatever", URL: ts.URL + "/schema/whatever"},
 		{ID: "unreachable-url", URL: ts.URL + "/404-not-found"},
 	})
-	v := NewValidator(reg, conf)
+	v := NewValidator(reg)
 
 	for k, tc := range []struct {
 		i   *Identity
@@ -71,37 +76,37 @@ func TestSchemaValidator(t *testing.T) {
 			i: &Identity{
 				Traits: Traits(`{ "firstName": "first-name", "lastName": "last-name", "age": -1 }`),
 			},
-			err: "I[#/traits/age] S[#/properties/age/minimum] must be >= 1 but found -1",
+			err: "I[#/traits/age] S[#/properties/traits/properties/age/minimum] must be >= 1 but found -1",
 		},
 		{
 			i: &Identity{
 				Traits: Traits(`{ "whatever": "first-name", "lastName": "last-name", "age": 1 }`),
 			},
-			err: `I[#/traits] S[#/additionalProperties] additionalProperties "whatever" not allowed`,
+			err: `I[#/traits] S[#/properties/traits/additionalProperties] additionalProperties "whatever" not allowed`,
 		},
 		{
 			i: &Identity{
-				TraitsSchemaID: "whatever",
-				Traits:         Traits(`{ "whatever": "first-name", "lastName": "last-name", "age": 1 }`),
+				SchemaID: "whatever",
+				Traits:   Traits(`{ "whatever": "first-name", "lastName": "last-name", "age": 1 }`),
 			},
 		},
 		{
 			i: &Identity{
-				TraitsSchemaID: "whatever",
-				Traits:         Traits(`{ "firstName": "first-name", "lastName": "last-name", "age": 1 }`),
+				SchemaID: "whatever",
+				Traits:   Traits(`{ "firstName": "first-name", "lastName": "last-name", "age": 1 }`),
 			},
-			err: `I[#/traits] S[#/additionalProperties] additionalProperties "firstName" not allowed`,
+			err: `I[#/traits] S[#/properties/traits/additionalProperties] additionalProperties "firstName" not allowed`,
 		},
 		{
 			i: &Identity{
-				TraitsSchemaID: "unreachable-url",
-				Traits:         Traits(`{ "firstName": "first-name", "lastName": "last-name", "age": 1 }`),
+				SchemaID: "unreachable-url",
+				Traits:   Traits(`{ "firstName": "first-name", "lastName": "last-name", "age": 1 }`),
 			},
 			err: "An internal server error occurred, please contact the system administrator",
 		},
 	} {
 		t.Run(fmt.Sprintf("case=%d", k), func(t *testing.T) {
-			err := v.Validate(tc.i)
+			err := v.Validate(context.Background(), tc.i)
 			if tc.err == "" {
 				require.NoError(t, err)
 			} else {

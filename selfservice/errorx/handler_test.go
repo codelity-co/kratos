@@ -6,33 +6,31 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/julienschmidt/httprouter"
-	"github.com/justinas/nosurf"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
-	"github.com/ory/x/errorsx"
-
 	"github.com/ory/herodot"
-
 	"github.com/ory/kratos/internal"
 	"github.com/ory/kratos/selfservice/errorx"
 	"github.com/ory/kratos/x"
+	"github.com/ory/nosurf"
+	"github.com/ory/x/errorsx"
 )
 
 func TestHandler(t *testing.T) {
-	_, reg := internal.NewRegistryDefault(t)
+	_, reg := internal.NewFastRegistryWithMocks(t)
 	h := errorx.NewHandler(reg)
 
 	t.Run("case=public authorization", func(t *testing.T) {
 		router := x.NewRouterPublic()
-		ns := nosurf.New(router)
+		ns := x.NewTestCSRFHandler(router, reg)
+
 		h.RegisterPublicRoutes(router)
 		router.GET("/regen", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 			ns.RegenerateToken(w, r)
@@ -59,29 +57,30 @@ func TestHandler(t *testing.T) {
 		expectedError := x.MustEncodeJSON(t, []error{herodot.ErrNotFound.WithReason("foobar")})
 
 		t.Run("call with valid csrf cookie", func(t *testing.T) {
-			jar, _ := cookiejar.New(nil)
-			hc := &http.Client{Jar: jar}
+			hc := &http.Client{}
 			id := getBody(t, hc, "/set-error", http.StatusOK)
-			actual := getBody(t, hc, errorx.ErrorsPath+"?error="+string(id), http.StatusOK)
+			actual := getBody(t, hc, errorx.RouteGet+"?error="+string(id), http.StatusOK)
 			assert.JSONEq(t, expectedError, gjson.GetBytes(actual, "errors").Raw, "%s", actual)
 
 			// We expect a forbid error if the error is not found, regardless of CSRF
-			_ = getBody(t, hc, errorx.ErrorsPath+"?error=does-not-exist", http.StatusForbidden)
+			_ = getBody(t, hc, errorx.RouteGet+"?error=does-not-exist", http.StatusForbidden)
 		})
+	})
 
-		t.Run("call without any cookies", func(t *testing.T) {
-			hc := &http.Client{}
-			id := getBody(t, hc, "/set-error", http.StatusOK)
-			_ = getBody(t, hc, errorx.ErrorsPath+"?error="+string(id), http.StatusForbidden)
-		})
+	t.Run("case=stubs", func(t *testing.T) {
+		router := x.NewRouterAdmin()
+		h.RegisterAdminRoutes(router)
+		ts := httptest.NewServer(router)
+		defer ts.Close()
 
-		t.Run("call with different csrf cookie", func(t *testing.T) {
-			jar, _ := cookiejar.New(nil)
-			hc := &http.Client{Jar: jar}
-			id := getBody(t, hc, "/set-error", http.StatusOK)
-			_ = getBody(t, hc, "/regen", http.StatusNoContent)
-			_ = getBody(t, hc, errorx.ErrorsPath+"?error="+string(id), http.StatusForbidden)
-		})
+		res, err := ts.Client().Get(ts.URL + errorx.RouteGet + "?error=stub:500")
+		require.NoError(t, err)
+		require.EqualValues(t, http.StatusOK, res.StatusCode)
+
+		actual, err := ioutil.ReadAll(res.Body)
+		require.NoError(t, err)
+
+		assert.EqualValues(t, "This is a stub error.", gjson.GetBytes(actual, "errors.0.reason").String())
 	})
 
 	t.Run("case=errors types", func(t *testing.T) {
@@ -114,13 +113,18 @@ func TestHandler(t *testing.T) {
 					errors.WithStack(herodot.ErrNotFound.WithReason("foobar")),
 				},
 			},
+			{
+				gave: []error{
+					errors.WithStack(herodot.ErrNotFound.WithReason("foobar").WithTrace(errors.New("asdf"))),
+				},
+			},
 		} {
 			t.Run(fmt.Sprintf("case=%d", k), func(t *testing.T) {
 				csrf := x.NewUUID()
 				id, err := reg.SelfServiceErrorPersister().Add(context.Background(), csrf.String(), tc.gave...)
 				require.NoError(t, err)
 
-				res, err := ts.Client().Get(ts.URL + errorx.ErrorsPath + "?error=" + id.String())
+				res, err := ts.Client().Get(ts.URL + errorx.RouteGet + "?error=" + id.String())
 				require.NoError(t, err)
 				defer res.Body.Close()
 				assert.EqualValues(t, http.StatusOK, res.StatusCode)

@@ -1,82 +1,53 @@
-###########################################################################
-#######             FOR DEMONSTRATION PURPOSES ONLY                 #######
-###########################################################################
-
 version: '3.7'
 
 services:
-
   kratos-migrate:
-    image: oryd/kratos:latest-sqlite
+    image: oryd/kratos:v0.5.5-alpha.1-sqlite
     environment:
-      - DSN=sqlite:///home/ory/sqlite/db.sqlite?_fk=true
+      - DSN=sqlite:///var/lib/sqlite/db.sqlite?_fk=true&mode=rwc
     volumes:
       -
         type: volume
         source: kratos-sqlite
-        target: /home/ory/sqlite
+        target: /var/lib/sqlite
         read_only: false
       -
         type: bind
         source: ./contrib/quickstart/kratos/email-password
         target: /etc/config/kratos
     command:
-      -c /etc/config/kratos/.kratos.yml migrate sql -e --yes
+      -c /etc/config/kratos/kratos.yml migrate sql -e --yes
     restart: on-failure
     networks:
       - intranet
 
   kratos-selfservice-ui-node:
-    image: oryd/kratos-selfservice-ui-node:latest
-    ports:
-      - "4435:4435"
+    image: oryd/kratos-selfservice-ui-node:v0.5.0-alpha.1
     environment:
-      - PORT=4435
       - KRATOS_PUBLIC_URL=http://kratos:4433/
       - KRATOS_ADMIN_URL=http://kratos:4434/
-      - KRATOS_BROWSER_URL=http://127.0.0.1:4455/.ory/kratos/public
-      - JWKS_URL=http://oathkeeper:4456/.well-known/jwks.json
     networks:
       - intranet
     restart: on-failure
-
-  oathkeeper:
-    image: oryd/oathkeeper:v0.35.5-beta.1
-    depends_on:
-      - kratos
-    ports:
-      - "4455:4455"
-      - "4456:4456"
-    command:
-      serve proxy -c "/etc/config/oathkeeper/.oathkeeper.yml"
-    environment:
-      - LOG_LEVEL=debug
-    restart: on-failure
-    networks:
-      - intranet
-    volumes:
-      -
-        type: bind
-        source: ./contrib/quickstart/oathkeeper
-        target: /etc/config/oathkeeper
 
   kratos:
     depends_on:
       - kratos-migrate
-    image: oryd/kratos:latest-sqlite
+    image: oryd/kratos:v0.5.5-alpha.1-sqlite
     ports:
       - "4433:4433" # public
       - "4434:4434" # admin
     restart: unless-stopped
     environment:
-      - DSN=sqlite:///home/ory/sqlite/db.sqlite?_fk=true
+      - DSN=sqlite:///var/lib/sqlite/db.sqlite?_fk=true
+      - LOG_LEVEL=trace
     command:
-      serve -c /etc/config/kratos/.kratos.yml --dev
+      serve -c /etc/config/kratos/kratos.yml --dev
     volumes:
       -
         type: volume
         source: kratos-sqlite
-        target: /home/ory/sqlite
+        target: /var/lib/sqlite
         read_only: false
       -
         type: bind

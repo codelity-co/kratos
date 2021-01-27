@@ -1,28 +1,28 @@
 package login
 
 import (
-	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"time"
 
-	"github.com/ory/kratos/selfservice/form"
-	"github.com/ory/x/errorsx"
+	"github.com/ory/x/urlx"
+
+	"github.com/ory/kratos/selfservice/flow"
+	"github.com/ory/kratos/text"
 
 	"github.com/pkg/errors"
 
 	"github.com/ory/herodot"
-	"github.com/ory/x/urlx"
 
-	"github.com/ory/kratos/driver/configuration"
+	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/identity"
 	"github.com/ory/kratos/selfservice/errorx"
 	"github.com/ory/kratos/x"
 )
 
 var (
-	ErrHookAbortRequest = errors.New("abort hook")
+	ErrHookAbortFlow   = errors.New("aborted login hook execution")
+	ErrAlreadyLoggedIn = herodot.ErrBadRequest.WithReason("A valid session was detected and thus login is not possible. Did you forget to set `?refresh=true`?")
 )
 
 type (
@@ -31,96 +31,117 @@ type (
 		x.WriterProvider
 		x.LoggingProvider
 
-		RequestPersistenceProvider
+		FlowPersistenceProvider
 		HandlerProvider
 	}
 
-	ErrorHandlerProvider interface{ LoginRequestErrorHandler() *ErrorHandler }
+	ErrorHandlerProvider interface{ LoginFlowErrorHandler() *ErrorHandler }
 
 	ErrorHandler struct {
 		d errorHandlerDependencies
-		c configuration.Provider
+		c *config.Config
 	}
 
-	requestExpiredError struct {
+	FlowExpiredError struct {
 		*herodot.DefaultError
+		ago time.Duration
 	}
 )
 
-func newRequestExpiredError(since time.Duration) requestExpiredError {
-	return requestExpiredError{
-		herodot.ErrBadRequest.
-			WithError("login request expired").
-			WithReasonf(`The login request has expired. Please restart the flow.`).
-			WithReasonf("The login request expired %.2f minutes ago, please try again.", since.Minutes()),
+func NewFlowExpiredError(at time.Time) *FlowExpiredError {
+	ago := time.Since(at)
+	return &FlowExpiredError{
+		ago: ago,
+		DefaultError: herodot.ErrBadRequest.
+			WithError("login flow expired").
+			WithReasonf(`The login flow has expired. Please restart the flow.`).
+			WithReasonf("The login flow expired %.2f minutes ago, please try again.", ago.Minutes()),
 	}
 }
 
-func NewErrorHandler(d errorHandlerDependencies, c configuration.Provider) *ErrorHandler {
-	return &ErrorHandler{
-		d: d,
-		c: c,
-	}
+func NewFlowErrorHandler(d errorHandlerDependencies, c *config.Config) *ErrorHandler {
+	return &ErrorHandler{d: d, c: c}
 }
 
-func (s *ErrorHandler) HandleLoginError(
-	w http.ResponseWriter,
-	r *http.Request,
-	ct identity.CredentialsType,
-	rr *Request,
-	err error,
-) {
-	s.d.Logger().WithError(err).
-		WithField("details", fmt.Sprintf("%+v", err)).
-		WithField("credentials_type", ct).
-		WithField("login_request", rr).
-		Warn("Encountered login error.")
+func (s *ErrorHandler) WriteFlowError(w http.ResponseWriter, r *http.Request, ct identity.CredentialsType, f *Flow, err error) {
+	s.d.Audit().
+		WithError(err).
+		WithRequest(r).
+		WithField("login_flow", f).
+		Info("Encountered self-service login error.")
 
-	if _, ok := errorsx.Cause(err).(requestExpiredError); ok {
-		// create new request because the old one is not valid
-		if err = s.d.LoginHandler().NewLoginRequest(w, r, func(a *Request) (string, error) {
-			for name, method := range a.Methods {
-				method.Config.AddError(&form.Error{Message: "Your session expired, please try again."})
-				if err := s.d.LoginRequestPersister().UpdateLoginRequest(context.TODO(), a.ID, name, method); err != nil {
-					return s.d.SelfServiceErrorManager().Create(r.Context(), w, r, err)
-				}
-				a.Methods[name] = method
-			}
+	if f == nil {
+		s.forward(w, r, nil, err)
+		return
+	}
 
-			return urlx.CopyWithQuery(s.c.LoginURL(), url.Values{"request": {a.ID.String()}}).String(), nil
-		}); err != nil {
+	if e := new(FlowExpiredError); errors.As(err, &e) {
+		// create new flow because the old one is not valid
+		a, err := s.d.LoginHandler().NewLoginFlow(w, r, f.Type)
+		if err != nil {
 			// failed to create a new session and redirect to it, handle that error as a new one
-			s.HandleLoginError(w, r, ct, rr, err)
+			s.WriteFlowError(w, r, ct, f, err)
+			return
+		}
+
+		a.Messages.Add(text.NewErrorValidationLoginFlowExpired(e.ago))
+		if err := s.d.LoginFlowPersister().UpdateLoginFlow(r.Context(), a); err != nil {
+			s.forward(w, r, a, err)
+			return
+		}
+
+		if f.Type == flow.TypeAPI {
+			http.Redirect(w, r, urlx.CopyWithQuery(urlx.AppendPaths(s.c.SelfPublicURL(),
+				RouteGetFlow), url.Values{"id": {a.ID.String()}}).String(), http.StatusFound)
+		} else {
+			http.Redirect(w, r, a.AppendTo(s.c.SelfServiceFlowLoginUI()).String(), http.StatusFound)
 		}
 		return
 	}
 
-	if rr == nil {
-		s.d.SelfServiceErrorManager().Forward(r.Context(), w, r, err)
-		return
-	} else if x.IsJSONRequest(r) {
-		s.d.Writer().WriteError(w, r, err)
-		return
-	}
-
-	method, ok := rr.Methods[ct]
+	method, ok := f.Methods[ct]
 	if !ok {
-		s.d.Writer().WriteError(w, r, errors.WithStack(herodot.ErrInternalServerError.WithErrorf(`Expected method "%s" to exist in request. This is a bug in the code and should be reported on GitHub.`, ct)))
+		s.forward(w, r, f, errors.WithStack(herodot.ErrInternalServerError.
+			WithErrorf(`Expected login method "%s" to exist in flow. This is a bug in the code and should be reported on GitHub.`, ct)))
 		return
 	}
 
 	if err := method.Config.ParseError(err); err != nil {
+		s.forward(w, r, f, err)
+		return
+	}
+
+	if err := s.d.LoginFlowPersister().UpdateLoginFlowMethod(r.Context(), f.ID, ct, method); err != nil {
+		s.forward(w, r, f, err)
+		return
+	}
+
+	if f.Type == flow.TypeBrowser {
+		http.Redirect(w, r, f.AppendTo(s.c.SelfServiceFlowLoginUI()).String(), http.StatusFound)
+		return
+	}
+
+	updatedFlow, innerErr := s.d.LoginFlowPersister().GetLoginFlow(r.Context(), f.ID)
+	if innerErr != nil {
+		s.forward(w, r, updatedFlow, innerErr)
+	}
+
+	s.d.Writer().WriteCode(w, r, x.RecoverStatusCode(err, http.StatusBadRequest), updatedFlow)
+}
+
+func (s *ErrorHandler) forward(w http.ResponseWriter, r *http.Request, rr *Flow, err error) {
+	if rr == nil {
+		if x.IsJSONRequest(r) {
+			s.d.Writer().WriteError(w, r, err)
+			return
+		}
 		s.d.SelfServiceErrorManager().Forward(r.Context(), w, r, err)
 		return
 	}
 
-	if err := s.d.LoginRequestPersister().UpdateLoginRequest(r.Context(), rr.ID, ct, method); err != nil {
+	if rr.Type == flow.TypeAPI {
+		s.d.Writer().WriteErrorCode(w, r, x.RecoverStatusCode(err, http.StatusBadRequest), err)
+	} else {
 		s.d.SelfServiceErrorManager().Forward(r.Context(), w, r, err)
-		return
 	}
-
-	http.Redirect(w, r,
-		urlx.CopyWithQuery(s.c.LoginURL(), url.Values{"request": {rr.ID.String()}}).String(),
-		http.StatusFound,
-	)
 }

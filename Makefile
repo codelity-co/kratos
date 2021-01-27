@@ -1,98 +1,148 @@
 SHELL=/bin/bash -o pipefail
 
-all:
-ifeq (, $(shell which golangci-lint))
-    curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s -- -b $(go env GOPATH)/bin v1.23.2
-endif
+#  EXECUTABLES = docker-compose docker node npm go
+#  K := $(foreach exec,$(EXECUTABLES),\
+#          $(if $(shell which $(exec)),some string,$(error "No $(exec) in PATH")))
 
-.PHONY: tools
-tools:
-		go install github.com/ory/go-acc github.com/ory/x/tools/listx github.com/go-swagger/go-swagger/cmd/swagger github.com/go-bindata/go-bindata/go-bindata github.com/sqs/goreturns github.com/ory/sdk/swagutil
+export GO111MODULE := on
+export PATH := .bin:${PATH}
+export PWD := $(shell pwd)
 
-.PHONY: build
-build:
-		make sqlbin
-		CGO_ENABLED=0 GO111MODULE=on GOOS=linux GOARCH=amd64 go build -o kratos .
+GO_DEPENDENCIES = github.com/ory/go-acc \
+				  github.com/ory/x/tools/listx \
+				  github.com/markbates/pkger/cmd/pkger \
+				  github.com/golang/mock/mockgen \
+				  github.com/go-swagger/go-swagger/cmd/swagger \
+				  golang.org/x/tools/cmd/goimports \
+				  github.com/mikefarah/yq
 
-.PHONY: init
-init:
-		go install \
-			github.com/sqs/goreturns \
-			github.com/ory/x/tools/listx \
-			github.com/ory/go-acc \
-			github.com/golang/mock/mockgen \
-			github.com/go-swagger/go-swagger/cmd/swagger \
-			golang.org/x/tools/cmd/goimports
+define make-go-dependency
+  # go install is responsible for not re-building when the code hasn't changed
+  .bin/$(notdir $1): go.mod go.sum Makefile
+		GOBIN=$(PWD)/.bin/ go install $1
+endef
+$(foreach dep, $(GO_DEPENDENCIES), $(eval $(call make-go-dependency, $(dep))))
+$(call make-lint-dependency)
+
+.bin/clidoc:
+		go build -o .bin/clidoc ./cmd/clidoc/.
+
+docs/cli: .bin/clidoc
+		clidoc .
+
+.bin/traefik:
+		https://github.com/containous/traefik/releases/download/v2.3.0-rc4/traefik_v2.3.0-rc4_linux_amd64.tar.gz \
+			tar -zxvf traefik_${traefik_version}_linux_${arch}.tar.gz
+
+.bin/cli: go.mod go.sum Makefile
+		go build -o .bin/cli -tags sqlite github.com/ory/cli
+
+node_modules: package.json Makefile
+		npm ci
+
+docs/node_modules: docs/package.json
+		cd docs; npm ci
+
+.bin/golangci-lint: Makefile
+		bash <(curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh) -d -b .bin v1.28.3
+
+.bin/hydra: Makefile
+		bash <(curl https://raw.githubusercontent.com/ory/hydra/master/install.sh) -d -b .bin v1.9.0-alpha.1
+
+.PHONY: docs
+docs: docs/node_modules
+		cd docs; npm run build
 
 .PHONY: lint
-lint:
-		GO111MODULE=on golangci-lint run -v ./...
+lint: .bin/golangci-lint
+		golangci-lint run -v ./...
 
 .PHONY: cover
 cover:
 		go test ./... -coverprofile=cover.out
 		go tool cover -func=cover.out
 
-.PHONE: mocks
-mocks:
+.PHONY: mocks
+mocks: .bin/mockgen
 		mockgen -mock_names Manager=MockLoginExecutorDependencies -package internal -destination internal/hook_login_executor_dependencies.go github.com/ory/kratos/selfservice loginExecutorDependencies
 
 .PHONY: install
-install:
-		packr2 || (GO111MODULE=on go install github.com/gobuffalo/packr/v2/packr2 && packr2)
-		GO111MODULE=on go install .
-		packr2 clean
-
-# Adds sql files to the binary using go-bindata
-.PHONY: sqlbin
-sqlbin:
-		cd driver; go-bindata -o sql_migration_files.go -pkg driver ../contrib/sql/...
+install: pack
+		GO111MODULE=on go install -tags sqlite .
 
 .PHONY: test-resetdb
 test-resetdb:
-		docker kill kratos_test_database_mysql || true
-		docker kill kratos_test_database_postgres || true
-		docker kill kratos_test_database_cockroach || true
-		docker rm -f kratos_test_database_mysql || true
-		docker rm -f kratos_test_database_postgres || true
-		docker rm -f kratos_test_database_cockroach || true
-		docker run --rm --name kratos_test_database_mysql -p 3444:3306 -e MYSQL_ROOT_PASSWORD=secret -d mysql:5.7
-		docker run --rm --name kratos_test_database_postgres -p 3445:5432 -e POSTGRES_PASSWORD=secret -e POSTGRES_DB=postgres -d postgres:9.6
-		docker run --rm --name kratos_test_database_cockroach -p 3446:26257 -d cockroachdb/cockroach:v2.1.6 start --insecure
+		script/testenv.sh
 
 .PHONY: test
-test: test-resetdb
-		source scripts/test-env.sh && go test -tags sqlite ./...
+test:
+		go test -p 1 -tags sqlite -count=1 -failfast ./...
 
-# Generates the SDKs
+# Generates the SDK
 .PHONY: sdk
-sdk:
-		$$(go env GOPATH)/bin/swagger generate spec -m -o docs/api.swagger.json -x internal/httpclient
-		$$(go env GOPATH)/bin/swagutil sanitize ./docs/api.swagger.json
-		$$(go env GOPATH)/bin/swagger validate ./docs/api.swagger.json
-		$$(go env GOPATH)/bin/swagger flatten --with-flatten=remove-unused -o ./docs/api.swagger.json ./docs/api.swagger.json
-		$$(go env GOPATH)/bin/swagger validate ./docs/api.swagger.json
-		rm -rf internal/httpclient
-		mkdir -p internal/httpclient
-		$$(go env GOPATH)/bin/swagger generate client -f ./docs/api.swagger.json -t internal/httpclient -A Ory_Kratos
+sdk: .bin/swagger .bin/cli
+		swagger generate spec -m -o .schema/api.swagger.json -x internal/httpclient
+		cli dev swagger sanitize ./.schema/api.swagger.json
+		swagger validate ./.schema/api.swagger.json
+		swagger flatten --with-flatten=remove-unused -o ./.schema/api.swagger.json ./.schema/api.swagger.json
+		swagger validate ./.schema/api.swagger.json
+		rm -rf internal/httpclient/models/* internal/httpclient/clients/*
+		mkdir -p internal/httpclient/
+		swagger generate client -f ./.schema/api.swagger.json -t internal/httpclient/ -A Ory_Kratos
 		make format
 
+.PHONY: quickstart
 quickstart:
 		docker pull oryd/kratos:latest-sqlite
 		docker pull oryd/kratos-selfservice-ui-node:latest
-		docker-compose -f quickstart.yml up --build --force-recreate
+		docker-compose -f quickstart.yml -f quickstart-standalone.yml up --build --force-recreate
 
+.PHONY: quickstart-dev
 quickstart-dev:
 		docker build -f .docker/Dockerfile-build -t oryd/kratos:latest-sqlite .
-		docker pull oryd/kratos-selfservice-ui-node:latest
-		docker-compose -f quickstart.yml up --build --force-recreate
+		docker-compose -f quickstart.yml -f quickstart-standalone.yml -f quickstart-latest.yml up --build --force-recreate
 
 # Formats the code
 .PHONY: format
-format:
-		$$(go env GOPATH)/bin/goreturns -w -local github.com/ory $$($$(go env GOPATH)/bin/listx .)
+format: .bin/goimports
+		goimports -w -local github.com/ory .
+		cd docs; npm run format
+		npm run format
 
 # Runs tests in short mode, without database adapters
 .PHONY: docker
 docker:
-		docker build -f .docker/Dockerfile-build -t oryd/kratos:latest .
+		docker build -f .docker/Dockerfile-build -t oryd/kratos:latest-sqlite .
+
+# Runs the documentation tests
+.PHONY: test-docs
+test-docs: node_modules
+		npm run text-run
+
+.PHONY: test-e2e
+test-e2e: node_modules test-resetdb
+		source script/test-envs.sh
+		test/e2e/run.sh sqlite
+		test/e2e/run.sh postgres
+		test/e2e/run.sh cockroach
+		test/e2e/run.sh mysql
+
+.PHONY: migrations-sync
+migrations-sync: .bin/cli
+		cli dev pop migration sync persistence/sql/migrations/templates persistence/sql/migratest/testdata
+
+.PHONY: migrations-render
+migrations-render: .bin/cli
+		cli dev pop migration render persistence/sql/migrations/templates persistence/sql/migrations/sql
+
+.PHONY: migrations-render-replace
+migrations-render-replace: .bin/cli
+		cli dev pop migration render -r persistence/sql/migrations/templates persistence/sql/migrations/sql
+
+.PHONY: migratest-refresh
+migratest-refresh:
+		cd persistence/sql/migratest; go test -tags sqlite,refresh -short .
+
+.PHONY: pack
+pack: .bin/pkger
+		pkger -exclude node_modules -exclude docs -exclude .git -exclude .github -exclude .bin -exclude test -exclude script -exclude contrib

@@ -1,4 +1,4 @@
-FROM oryd/xgoreleaser:1.13.7
+FROM oryd/xgoreleaser:1.14.4-0.138.0
 
 WORKDIR /home/ory
 

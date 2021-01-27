@@ -16,8 +16,8 @@
 package main
 
 import (
-	"github.com/markbates/pkger"
-
+	"github.com/ory/kratos/driver"
+	"github.com/ory/x/dbal"
 	"github.com/ory/x/profilex"
 
 	"github.com/ory/kratos/cmd"
@@ -25,7 +25,9 @@ import (
 
 func main() {
 	defer profilex.Profile().Stop()
+	dbal.RegisterDriver(func() dbal.Driver {
+		return driver.NewRegistryDefault()
+	})
 
-	pkger.Include("/courier/template/templates")
 	cmd.Execute()
 }

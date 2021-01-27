@@ -13,15 +13,42 @@ import (
 	"github.com/ory/kratos/selfservice/flow/login"
 )
 
-var _ login.RequestPersister = new(Persister)
+var _ login.FlowPersister = new(Persister)
 
-func (p *Persister) CreateLoginRequest(ctx context.Context, r *login.Request) error {
+func (p *Persister) CreateLoginFlow(ctx context.Context, r *login.Flow) error {
 	return p.GetConnection(ctx).Eager().Create(r)
 }
 
-func (p *Persister) GetLoginRequest(ctx context.Context, id uuid.UUID) (*login.Request, error) {
+func (p *Persister) UpdateLoginFlow(ctx context.Context, r *login.Flow) error {
+	return p.Transaction(ctx, func(ctx context.Context, tx *pop.Connection) error {
+
+		rr, err := p.GetLoginFlow(ctx, r.ID)
+		if err != nil {
+			return err
+		}
+
+		for _, dbc := range rr.Methods {
+			if err := tx.Destroy(dbc); err != nil {
+				return sqlcon.HandleError(err)
+			}
+		}
+
+		for _, of := range r.Methods {
+			of.ID = uuid.UUID{}
+			of.Flow = rr
+			of.FlowID = rr.ID
+			if err := tx.Save(of); err != nil {
+				return sqlcon.HandleError(err)
+			}
+		}
+
+		return tx.Save(r)
+	})
+}
+
+func (p *Persister) GetLoginFlow(ctx context.Context, id uuid.UUID) (*login.Flow, error) {
 	conn := p.GetConnection(ctx)
-	var r login.Request
+	var r login.Flow
 	if err := conn.Eager().Find(&r, id); err != nil {
 		return nil, sqlcon.HandleError(err)
 	}
@@ -33,22 +60,40 @@ func (p *Persister) GetLoginRequest(ctx context.Context, id uuid.UUID) (*login.R
 	return &r, nil
 }
 
-func (p *Persister) UpdateLoginRequest(ctx context.Context, id uuid.UUID, ct identity.CredentialsType, rm *login.RequestMethod) error {
-	return p.Transaction(ctx, func(tx *pop.Connection) error {
-		ctx := WithTransaction(ctx, tx)
-		rr, err := p.GetLoginRequest(ctx, id)
+func (p *Persister) ForceLoginFlow(ctx context.Context, id uuid.UUID) error {
+	return p.Transaction(ctx, func(ctx context.Context, tx *pop.Connection) error {
+
+		lr, err := p.GetLoginFlow(ctx, id)
+		if err != nil {
+			return err
+		}
+
+		lr.Forced = true
+		return tx.Save(lr)
+	})
+}
+
+func (p *Persister) UpdateLoginFlowMethod(ctx context.Context, id uuid.UUID, ct identity.CredentialsType, rm *login.FlowMethod) error {
+	return p.Transaction(ctx, func(ctx context.Context, tx *pop.Connection) error {
+
+		rr, err := p.GetLoginFlow(ctx, id)
 		if err != nil {
 			return err
 		}
 
 		method, ok := rr.Methods[ct]
 		if !ok {
-			rm.RequestID = rr.ID
+			rm.FlowID = rr.ID
 			rm.Method = ct
 			return tx.Save(rm)
 		}
 
 		method.Config = rm.Config
-		return tx.Save(method)
+		if err := tx.Save(method); err != nil {
+			return err
+		}
+
+		rr.Active = ct
+		return tx.Save(rr)
 	})
 }

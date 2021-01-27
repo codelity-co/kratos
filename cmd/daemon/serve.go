@@ -1,14 +1,23 @@
 package daemon
 
 import (
-	stdctx "context"
+	cx "context"
 	"net/http"
 	"strings"
 	"sync"
 
-	"github.com/sirupsen/logrus"
+	"github.com/ory/x/reqlog"
 
-	"github.com/ory/x/flagx"
+	"github.com/ory/kratos/driver/config"
+
+	"github.com/ory/x/stringsx"
+
+	"github.com/rs/cors"
+
+	"github.com/ory/kratos/metrics/prometheus"
+
+	"github.com/ory/analytics-go/v4"
+
 	"github.com/ory/x/healthx"
 
 	"github.com/gorilla/context"
@@ -23,53 +32,79 @@ import (
 	"github.com/ory/kratos/selfservice/errorx"
 	"github.com/ory/kratos/selfservice/flow/login"
 	"github.com/ory/kratos/selfservice/flow/logout"
-	"github.com/ory/kratos/selfservice/flow/profile"
 	"github.com/ory/kratos/selfservice/flow/registration"
-	"github.com/ory/kratos/selfservice/flow/verify"
+	"github.com/ory/kratos/selfservice/flow/settings"
+	"github.com/ory/kratos/selfservice/flow/verification"
+	"github.com/ory/kratos/selfservice/strategy/link"
 	"github.com/ory/kratos/selfservice/strategy/oidc"
 	"github.com/ory/kratos/selfservice/strategy/password"
+	"github.com/ory/kratos/selfservice/strategy/profile"
 	"github.com/ory/kratos/session"
 	"github.com/ory/kratos/x"
 )
 
-func servePublic(d driver.Driver, wg *sync.WaitGroup, cmd *cobra.Command, args []string) {
-	defer wg.Done()
+type options struct {
+	mwf []func(rw http.ResponseWriter, r *http.Request, next http.HandlerFunc)
+}
 
-	c := d.Configuration()
-	l := d.Logger()
+func newOptions(opts []Option) *options {
+	o := new(options)
+	for _, f := range opts {
+		f(o)
+	}
+	return o
+}
+
+type Option func(*options)
+
+func WithRootMiddleware(m func(rw http.ResponseWriter, r *http.Request, next http.HandlerFunc)) Option {
+	return func(o *options) {
+		o.mwf = append(o.mwf, m)
+	}
+}
+
+func ServePublic(r driver.Registry, wg *sync.WaitGroup, cmd *cobra.Command, args []string, opts ...Option) {
+	defer wg.Done()
+	modifiers := newOptions(opts)
+
+	c := r.Config(cmd.Context())
+	l := r.Logger()
 	n := negroni.New()
-	r := d.Registry()
+	for _, mw := range modifiers.mwf {
+		n.UseFunc(mw)
+	}
 
 	router := x.NewRouterPublic()
-	r.LoginHandler().RegisterPublicRoutes(router)
-	r.RegistrationHandler().RegisterPublicRoutes(router)
-	r.LogoutHandler().RegisterPublicRoutes(router)
-	r.ProfileManagementHandler().RegisterPublicRoutes(router)
-	r.LoginStrategies().RegisterPublicRoutes(router)
-	r.RegistrationStrategies().RegisterPublicRoutes(router)
-	r.SessionHandler().RegisterPublicRoutes(router)
-	r.SelfServiceErrorHandler().RegisterPublicRoutes(router)
-	r.SchemaHandler().RegisterPublicRoutes(router)
-	r.VerificationHandler().RegisterPublicRoutes(router)
-	r.HealthHandler().SetRoutes(router.Router, false)
-
-	n.Use(NewNegroniLoggerMiddleware(l.(*logrus.Logger), "public#"+c.SelfPublicURL().String()))
-	n.Use(sqa(cmd, d))
-
-	r.WithCSRFHandler(x.NewCSRFHandler(
+	csrf := x.NewCSRFHandler(
 		router,
 		r.Writer(),
 		l,
-		c.SelfPublicURL().Path,
+		stringsx.Coalesce(c.SelfPublicURL().Path, "/"),
 		c.SelfPublicURL().Hostname(),
-		!flagx.MustGetBool(cmd, "dev"),
-	))
-	n.UseHandler(
-		r.CSRFHandler(),
+		!c.IsInsecureDevMode(),
 	)
+
+	n.UseFunc(x.CleanPath) // Prevent double slashes from breaking CSRF.
+	r.WithCSRFHandler(csrf)
+	n.UseHandler(r.CSRFHandler())
+
+	r.RegisterPublicRoutes(router)
+	n.Use(reqlog.NewMiddlewareFromLogger(l, "public#"+c.SelfPublicURL().String()))
+	n.Use(sqa(cmd, r))
+
+	if tracer := r.Tracer(cmd.Context()); tracer.IsLoaded() {
+		n.Use(tracer)
+	}
+
+	var handler http.Handler = n
+	options, enabled := r.Config(cmd.Context()).CORS("public")
+	if enabled {
+		handler = cors.New(options).Handler(handler)
+	}
+
 	server := graceful.WithDefaults(&http.Server{
 		Addr:    c.PublicListenOn(),
-		Handler: context.ClearHandler(n),
+		Handler: context.ClearHandler(handler),
 	})
 
 	l.Printf("Starting the public httpd on: %s", server.Addr)
@@ -79,26 +114,26 @@ func servePublic(d driver.Driver, wg *sync.WaitGroup, cmd *cobra.Command, args [
 	l.Println("Public httpd was shutdown gracefully")
 }
 
-func serveAdmin(d driver.Driver, wg *sync.WaitGroup, cmd *cobra.Command, args []string) {
+func ServeAdmin(r driver.Registry, wg *sync.WaitGroup, cmd *cobra.Command, args []string, opts ...Option) {
 	defer wg.Done()
+	modifiers := newOptions(opts)
 
-	c := d.Configuration()
-	l := d.Logger()
+	c := r.Config(cmd.Context())
+	l := r.Logger()
 	n := negroni.New()
-	r := d.Registry()
+	for _, mw := range modifiers.mwf {
+		n.UseFunc(mw)
+	}
 
 	router := x.NewRouterAdmin()
-	r.RegistrationHandler().RegisterAdminRoutes(router)
-	r.LoginHandler().RegisterAdminRoutes(router)
-	r.VerificationHandler().RegisterAdminRoutes(router)
-	r.ProfileManagementHandler().RegisterAdminRoutes(router)
-	r.IdentityHandler().RegisterAdminRoutes(router)
-	r.SessionHandler().RegisterAdminRoutes(router)
-	r.HealthHandler().SetRoutes(router.Router, true)
-	r.SelfServiceErrorHandler().RegisterAdminRoutes(router)
+	r.RegisterAdminRoutes(router)
+	n.Use(reqlog.NewMiddlewareFromLogger(l, "admin#"+c.SelfPublicURL().String()))
+	n.Use(sqa(cmd, r))
+	n.Use(r.PrometheusManager())
 
-	n.Use(NewNegroniLoggerMiddleware(l.(*logrus.Logger), "admin#"+c.SelfAdminURL().String()))
-	n.Use(sqa(cmd, d))
+	if tracer := r.Tracer(cmd.Context()); tracer.IsLoaded() {
+		n.Use(tracer)
+	}
 
 	n.UseHandler(router)
 	server := graceful.WithDefaults(&http.Server{
@@ -113,69 +148,100 @@ func serveAdmin(d driver.Driver, wg *sync.WaitGroup, cmd *cobra.Command, args []
 	l.Println("Admin httpd was shutdown gracefully")
 }
 
-func sqa(cmd *cobra.Command, d driver.Driver) *metricsx.Service {
-	// Creates only one instance
+func sqa(cmd *cobra.Command, d driver.Registry) *metricsx.Service {
+	// Creates only ones
+	// instance
 	return metricsx.New(
 		cmd,
 		d.Logger(),
+		d.Config(cmd.Context()).Source(),
 		&metricsx.Options{
 			Service: "ory-kratos",
 			ClusterID: metricsx.Hash(
 				strings.Join([]string{
-					d.Configuration().DSN(),
-					d.Configuration().SelfPublicURL().String(),
-					d.Configuration().SelfAdminURL().String(),
+					d.Config(cmd.Context()).DSN(),
+					d.Config(cmd.Context()).SelfPublicURL().String(),
+					d.Config(cmd.Context()).SelfAdminURL().String(),
 				}, "|"),
 			),
-			IsDevelopment: flagx.MustGetBool(cmd, "dev"),
+			IsDevelopment: d.Config(cmd.Context()).IsInsecureDevMode(),
 			WriteKey:      "qQlI6q8Q4WvkzTjKQSor4sHYOikHIvvi",
 			WhitelistedPaths: []string{
 				"/",
 				healthx.AliveCheckPath,
 				healthx.ReadyCheckPath,
 				healthx.VersionPath,
-				"/auth/methods/oidc/",
-				password.RegistrationPath,
-				password.LoginPath,
-				oidc.BasePath,
-				login.BrowserLoginPath,
-				login.BrowserLoginRequestsPath,
-				logout.BrowserLogoutPath,
-				registration.BrowserRegistrationPath,
-				registration.BrowserRegistrationRequestsPath,
-				session.SessionsWhoamiPath,
-				identity.IdentitiesPath,
-				profile.PublicProfileManagementPath,
-				profile.AdminBrowserProfileRequestPath,
-				profile.PublicProfileManagementPath,
-				profile.PublicProfileManagementUpdatePath,
-				verify.PublicVerificationCompletePath,
-				strings.ReplaceAll(strings.ReplaceAll(verify.PublicVerificationConfirmPath, ":via", "email"), ":code", ""),
-				strings.ReplaceAll(verify.PublicVerificationInitPath, ":via", "email"),
-				verify.PublicVerificationRequestPath,
-				errorx.ErrorsPath,
+
+				password.RouteRegistration,
+				password.RouteLogin,
+				password.RouteSettings,
+
+				oidc.RouteBase,
+
+				login.RouteInitBrowserFlow,
+				login.RouteInitAPIFlow,
+				login.RouteGetFlow,
+
+				logout.RouteBrowser,
+
+				registration.RouteInitBrowserFlow,
+				registration.RouteInitAPIFlow,
+				registration.RouteGetFlow,
+
+				session.RouteWhoami,
+				identity.RouteBase,
+
+				settings.RouteInitBrowserFlow,
+				settings.RouteInitAPIFlow,
+				settings.RouteGetFlow,
+
+				verification.RouteInitAPIFlow,
+				verification.RouteInitBrowserFlow,
+				verification.RouteGetFlow,
+
+				profile.RouteSettings,
+
+				link.RouteAdminCreateRecoveryLink,
+				link.RouteRecovery,
+				link.RouteVerification,
+
+				errorx.RouteGet,
+				prometheus.MetricsPrometheusPath,
 			},
-			BuildVersion: d.Registry().BuildVersion(),
-			BuildHash:    d.Registry().BuildHash(),
-			BuildTime:    d.Registry().BuildDate(),
+			BuildVersion: config.Version,
+			BuildHash:    config.Commit,
+			BuildTime:    config.Date,
+			Config: &analytics.Config{
+				Endpoint: "https://sqa.ory.sh",
+			},
 		},
 	)
 }
 
-func bgTasks(d driver.Driver, wg *sync.WaitGroup, cmd *cobra.Command, args []string) {
+func bgTasks(d driver.Registry, wg *sync.WaitGroup, cmd *cobra.Command, args []string) {
 	defer wg.Done()
 
-	if err := d.Registry().Courier().Work(stdctx.Background()); err != nil {
+	ctx, cancel := cx.WithCancel(cmd.Context())
+
+	d.Logger().Println("Courier worker started.")
+	if err := graceful.Graceful(func() error {
+		return d.Courier().Work(ctx)
+	}, func(_ cx.Context) error {
+		cancel()
+		return nil
+	}); err != nil {
 		d.Logger().WithError(err).Fatalf("Failed to run courier worker.")
 	}
+
+	d.Logger().Println("Courier worker was shutdown gracefully.")
 }
 
-func ServeAll(d driver.Driver) func(cmd *cobra.Command, args []string) {
+func ServeAll(d driver.Registry, opts ...Option) func(cmd *cobra.Command, args []string) {
 	return func(cmd *cobra.Command, args []string) {
 		var wg sync.WaitGroup
 		wg.Add(3)
-		go servePublic(d, &wg, cmd, args)
-		go serveAdmin(d, &wg, cmd, args)
+		go ServePublic(d, &wg, cmd, args, opts...)
+		go ServeAdmin(d, &wg, cmd, args, opts...)
 		go bgTasks(d, &wg, cmd, args)
 		wg.Wait()
 	}

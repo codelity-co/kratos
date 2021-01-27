@@ -6,40 +6,40 @@ package models
 // Editing this file might prove futile when you re-run the swagger generate command
 
 import (
-	"strconv"
+	"context"
 
 	"github.com/go-openapi/errors"
-	strfmt "github.com/go-openapi/strfmt"
+	"github.com/go-openapi/strfmt"
 	"github.com/go-openapi/swag"
 	"github.com/go-openapi/validate"
 )
 
-// FormField Field represents a HTML Form Field
+// FormField FormField FormField Field represents a HTML Form Field
+//
 // swagger:model formField
 type FormField struct {
 
-	// Disabled is the equivalent of <input disabled="{{.Disabled}}">
+	// Disabled is the equivalent of `<input {{if .Disabled}}disabled{{end}}">`
 	Disabled bool `json:"disabled,omitempty"`
 
-	// Errors contains all validation errors this particular field has caused.
-	Errors []*Error `json:"errors"`
+	// messages
+	Messages Messages `json:"messages,omitempty"`
 
-	// Name is the equivalent of <input name="{{.Name}}">
+	// Name is the equivalent of `<input name="{{.Name}}">`
 	// Required: true
 	Name *string `json:"name"`
 
-	// Pattern is the equivalent of <input pattern="{{.Pattern}}">
+	// Pattern is the equivalent of `<input pattern="{{.Pattern}}">`
 	Pattern string `json:"pattern,omitempty"`
 
-	// Required is the equivalent of <input required="{{.Required}}">
-	// Required: true
-	Required *bool `json:"required"`
+	// Required is the equivalent of `<input required="{{.Required}}">`
+	Required bool `json:"required,omitempty"`
 
-	// Type is the equivalent of <input type="{{.Type}}">
+	// Type is the equivalent of `<input type="{{.Type}}">`
 	// Required: true
 	Type *string `json:"type"`
 
-	// Value is the equivalent of <input value="{{.Value}}">
+	// Value is the equivalent of `<input value="{{.Value}}">`
 	Value interface{} `json:"value,omitempty"`
 }
 
@@ -47,15 +47,11 @@ type FormField struct {
 func (m *FormField) Validate(formats strfmt.Registry) error {
 	var res []error
 
-	if err := m.validateErrors(formats); err != nil {
+	if err := m.validateMessages(formats); err != nil {
 		res = append(res, err)
 	}
 
 	if err := m.validateName(formats); err != nil {
-		res = append(res, err)
-	}
-
-	if err := m.validateRequired(formats); err != nil {
 		res = append(res, err)
 	}
 
@@ -69,26 +65,16 @@ func (m *FormField) Validate(formats strfmt.Registry) error {
 	return nil
 }
 
-func (m *FormField) validateErrors(formats strfmt.Registry) error {
-
-	if swag.IsZero(m.Errors) { // not required
+func (m *FormField) validateMessages(formats strfmt.Registry) error {
+	if swag.IsZero(m.Messages) { // not required
 		return nil
 	}
 
-	for i := 0; i < len(m.Errors); i++ {
-		if swag.IsZero(m.Errors[i]) { // not required
-			continue
+	if err := m.Messages.Validate(formats); err != nil {
+		if ve, ok := err.(*errors.Validation); ok {
+			return ve.ValidateName("messages")
 		}
-
-		if m.Errors[i] != nil {
-			if err := m.Errors[i].Validate(formats); err != nil {
-				if ve, ok := err.(*errors.Validation); ok {
-					return ve.ValidateName("errors" + "." + strconv.Itoa(i))
-				}
-				return err
-			}
-		}
-
+		return err
 	}
 
 	return nil
@@ -103,18 +89,35 @@ func (m *FormField) validateName(formats strfmt.Registry) error {
 	return nil
 }
 
-func (m *FormField) validateRequired(formats strfmt.Registry) error {
+func (m *FormField) validateType(formats strfmt.Registry) error {
 
-	if err := validate.Required("required", "body", m.Required); err != nil {
+	if err := validate.Required("type", "body", m.Type); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (m *FormField) validateType(formats strfmt.Registry) error {
+// ContextValidate validate this form field based on the context it is used
+func (m *FormField) ContextValidate(ctx context.Context, formats strfmt.Registry) error {
+	var res []error
 
-	if err := validate.Required("type", "body", m.Type); err != nil {
+	if err := m.contextValidateMessages(ctx, formats); err != nil {
+		res = append(res, err)
+	}
+
+	if len(res) > 0 {
+		return errors.CompositeValidationError(res...)
+	}
+	return nil
+}
+
+func (m *FormField) contextValidateMessages(ctx context.Context, formats strfmt.Registry) error {
+
+	if err := m.Messages.ContextValidate(ctx, formats); err != nil {
+		if ve, ok := err.(*errors.Validation); ok {
+			return ve.ValidateName("messages")
+		}
 		return err
 	}
 

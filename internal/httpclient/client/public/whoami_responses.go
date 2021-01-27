@@ -10,10 +10,9 @@ import (
 	"io"
 
 	"github.com/go-openapi/runtime"
+	"github.com/go-openapi/strfmt"
 
-	strfmt "github.com/go-openapi/strfmt"
-
-	"github.com/ory/kratos/internal/httpclient/models"
+	"github.com/ory/kratos-client-go/models"
 )
 
 // WhoamiReader is a Reader for the Whoami structure.
@@ -30,8 +29,8 @@ func (o *WhoamiReader) ReadResponse(response runtime.ClientResponse, consumer ru
 			return nil, err
 		}
 		return result, nil
-	case 403:
-		result := NewWhoamiForbidden()
+	case 401:
+		result := NewWhoamiUnauthorized()
 		if err := result.readResponse(response, consumer, o.formats); err != nil {
 			return nil, err
 		}
@@ -42,9 +41,8 @@ func (o *WhoamiReader) ReadResponse(response runtime.ClientResponse, consumer ru
 			return nil, err
 		}
 		return nil, result
-
 	default:
-		return nil, runtime.NewAPIError("unknown error", response, response.Code())
+		return nil, runtime.NewAPIError("response status code does not match any response statuses defined for this endpoint in the swagger spec", response, response.Code())
 	}
 }
 
@@ -53,7 +51,7 @@ func NewWhoamiOK() *WhoamiOK {
 	return &WhoamiOK{}
 }
 
-/*WhoamiOK handles this case with default header values.
+/* WhoamiOK describes a response with status code 200, with default header values.
 
 session
 */
@@ -64,7 +62,6 @@ type WhoamiOK struct {
 func (o *WhoamiOK) Error() string {
 	return fmt.Sprintf("[GET /sessions/whoami][%d] whoamiOK  %+v", 200, o.Payload)
 }
-
 func (o *WhoamiOK) GetPayload() *models.Session {
 	return o.Payload
 }
@@ -81,28 +78,27 @@ func (o *WhoamiOK) readResponse(response runtime.ClientResponse, consumer runtim
 	return nil
 }
 
-// NewWhoamiForbidden creates a WhoamiForbidden with default headers values
-func NewWhoamiForbidden() *WhoamiForbidden {
-	return &WhoamiForbidden{}
+// NewWhoamiUnauthorized creates a WhoamiUnauthorized with default headers values
+func NewWhoamiUnauthorized() *WhoamiUnauthorized {
+	return &WhoamiUnauthorized{}
 }
 
-/*WhoamiForbidden handles this case with default header values.
+/* WhoamiUnauthorized describes a response with status code 401, with default header values.
 
 genericError
 */
-type WhoamiForbidden struct {
+type WhoamiUnauthorized struct {
 	Payload *models.GenericError
 }
 
-func (o *WhoamiForbidden) Error() string {
-	return fmt.Sprintf("[GET /sessions/whoami][%d] whoamiForbidden  %+v", 403, o.Payload)
+func (o *WhoamiUnauthorized) Error() string {
+	return fmt.Sprintf("[GET /sessions/whoami][%d] whoamiUnauthorized  %+v", 401, o.Payload)
 }
-
-func (o *WhoamiForbidden) GetPayload() *models.GenericError {
+func (o *WhoamiUnauthorized) GetPayload() *models.GenericError {
 	return o.Payload
 }
 
-func (o *WhoamiForbidden) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
+func (o *WhoamiUnauthorized) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
 
 	o.Payload = new(models.GenericError)
 
@@ -119,7 +115,7 @@ func NewWhoamiInternalServerError() *WhoamiInternalServerError {
 	return &WhoamiInternalServerError{}
 }
 
-/*WhoamiInternalServerError handles this case with default header values.
+/* WhoamiInternalServerError describes a response with status code 500, with default header values.
 
 genericError
 */
@@ -130,7 +126,6 @@ type WhoamiInternalServerError struct {
 func (o *WhoamiInternalServerError) Error() string {
 	return fmt.Sprintf("[GET /sessions/whoami][%d] whoamiInternalServerError  %+v", 500, o.Payload)
 }
-
 func (o *WhoamiInternalServerError) GetPayload() *models.GenericError {
 	return o.Payload
 }

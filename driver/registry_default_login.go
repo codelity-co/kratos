@@ -7,40 +7,40 @@ import (
 
 func (m *RegistryDefault) LoginHookExecutor() *login.HookExecutor {
 	if m.selfserviceLoginExecutor == nil {
-		m.selfserviceLoginExecutor = login.NewHookExecutor(m, m.c)
+		m.selfserviceLoginExecutor = login.NewHookExecutor(m)
 	}
 	return m.selfserviceLoginExecutor
 }
 
-func (m *RegistryDefault) PreLoginHooks() []login.PreHookExecutor {
-	return []login.PreHookExecutor{}
+func (m *RegistryDefault) PreLoginHooks() (b []login.PreHookExecutor) {
+	for _, v := range m.getHooks("", m.c.SelfServiceFlowLoginBeforeHooks()) {
+		if hook, ok := v.(login.PreHookExecutor); ok {
+			b = append(b, hook)
+		}
+	}
+	return
 }
 
-func (m *RegistryDefault) PostLoginHooks(credentialsType identity.CredentialsType) []login.PostHookExecutor {
-	a := m.getHooks(credentialsType, m.c.SelfServiceLoginAfterHooks(string(credentialsType)))
-
-	var b []login.PostHookExecutor
-
-	for _, v := range a {
+func (m *RegistryDefault) PostLoginHooks(credentialsType identity.CredentialsType) (b []login.PostHookExecutor) {
+	for _, v := range m.getHooks(string(credentialsType), m.c.SelfServiceFlowLoginAfterHooks(string(credentialsType))) {
 		if hook, ok := v.(login.PostHookExecutor); ok {
 			b = append(b, hook)
 		}
 	}
-
-	return b
+	return
 }
 
 func (m *RegistryDefault) LoginHandler() *login.Handler {
 	if m.selfserviceLoginHandler == nil {
-		m.selfserviceLoginHandler = login.NewHandler(m, m.c)
+		m.selfserviceLoginHandler = login.NewHandler(m)
 	}
 
 	return m.selfserviceLoginHandler
 }
 
-func (m *RegistryDefault) LoginRequestErrorHandler() *login.ErrorHandler {
+func (m *RegistryDefault) LoginFlowErrorHandler() *login.ErrorHandler {
 	if m.selfserviceLoginRequestErrorHandler == nil {
-		m.selfserviceLoginRequestErrorHandler = login.NewErrorHandler(m, m.c)
+		m.selfserviceLoginRequestErrorHandler = login.NewFlowErrorHandler(m, m.c)
 	}
 
 	return m.selfserviceLoginRequestErrorHandler

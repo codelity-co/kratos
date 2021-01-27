@@ -8,6 +8,7 @@ import (
 	"github.com/ory/x/jsonschemax"
 
 	"github.com/ory/kratos/schema"
+	"github.com/ory/kratos/text"
 )
 
 const DisableFormField = "disableFormField"
@@ -21,36 +22,45 @@ type Fields []Field
 //
 // swagger:model formField
 type Field struct {
-	// Name is the equivalent of <input name="{{.Name}}">
+	// Name is the equivalent of `<input name="{{.Name}}">`
 	//
 	// required: true
 	Name string `json:"name"`
-	// Type is the equivalent of <input type="{{.Type}}">
+
+	// Type is the equivalent of `<input type="{{.Type}}">`
 	//
+	// enum:
+	// - hidden
+	// - email
+	// - password
+	// - date
+	// - url
+	// - text
+	// - datetime-local
+	// - number
+	// - submit
 	// required: true
 	Type string `json:"type"`
 
-	// Pattern is the equivalent of <input pattern="{{.Pattern}}">
+	// Pattern is the equivalent of `<input pattern="{{.Pattern}}">`
 	Pattern string `json:"pattern,omitempty"`
 
-	// Disabled is the equivalent of <input disabled="{{.Disabled}}">
+	// Disabled is the equivalent of `<input {{if .Disabled}}disabled{{end}}">`
 	Disabled bool `json:"disabled,omitempty"`
 
-	// Required is the equivalent of <input required="{{.Required}}">
-	//
-	// required: true
+	// Required is the equivalent of `<input required="{{.Required}}">`
 	Required bool `json:"required,omitempty"`
 
-	// Value is the equivalent of <input value="{{.Value}}">
-	Value interface{} `json:"value,omitempty" faker:"name"`
+	// Value is the equivalent of `<input value="{{.Value}}">`
+	Value interface{} `json:"value,omitempty" faker:"string"`
 
-	// Errors contains all validation errors this particular field has caused.
-	Errors []Error `json:"errors,omitempty"`
+	// Messages contains a list of messages (e.g. validation errors) that affect this field.
+	Messages text.Messages `json:"messages,omitempty"`
 }
 
 // Reset resets a field's value and errors.
 func (f *Field) Reset() {
-	f.Errors = nil
+	f.Messages = nil
 	f.Value = nil
 }
 
@@ -65,7 +75,10 @@ func (ff *Fields) sortBySchema(schemaRef, prefix string) (func(i, j int) bool, e
 		"password",
 	}
 	for _, k := range schemaKeys {
-		keysInOrder = append(keysInOrder, fmt.Sprintf("%s.%s", prefix, k))
+		if prefix != "" {
+			k = fmt.Sprintf("%s.%s", prefix, k)
+		}
+		keysInOrder = append(keysInOrder, k)
 	}
 
 	getKeyPosition := func(name string) int {

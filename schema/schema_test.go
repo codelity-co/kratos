@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ory/kratos/driver/configuration"
+	"github.com/ory/kratos/driver/config"
 	"github.com/ory/x/urlx"
 )
 
@@ -27,7 +27,7 @@ func TestSchemas_GetByID(t *testing.T) {
 			ID: "foobar",
 		},
 		Schema{
-			ID: configuration.DefaultIdentityTraitsSchemaID,
+			ID: config.DefaultIdentityTraitsSchemaID,
 		},
 	}
 
@@ -57,7 +57,7 @@ func TestSchemas_GetByID(t *testing.T) {
 	t.Run("case=get default schema", func(t *testing.T) {
 		s1, err := ss.GetByID("")
 		require.NoError(t, err)
-		s2, err := ss.GetByID(configuration.DefaultIdentityTraitsSchemaID)
+		s2, err := ss.GetByID(config.DefaultIdentityTraitsSchemaID)
 		require.NoError(t, err)
 		assert.Equal(t, &ss[3], s1)
 		assert.Equal(t, &ss[3], s2)
@@ -74,9 +74,12 @@ func TestGetKeysInOrder(t *testing.T) {
 	for i, tc := range []struct {
 		schemaRef string
 		keys      []string
+		path      string
 	}{
 		{schemaRef: "file://./stub/identity.schema.json", keys: []string{"bar", "email"}},
-		{schemaRef: "file://./stub/complex.schema.json", keys: []string{"meal.name", "meal.chef", "fruits", "vegetables"}},
+		{schemaRef: "file://./stub/complex.schema.json", keys: []string{"meal.name", "meal.chef", "traits.email",
+			"traits.stringy", "traits.numby", "traits.booly", "traits.should_big_number", "traits.should_long_string",
+			"fruits", "vegetables"}},
 	} {
 		t.Run(fmt.Sprintf("case=%d schemaRef=%s", i, tc.schemaRef), func(t *testing.T) {
 			actual, err := GetKeysInOrder(tc.schemaRef)

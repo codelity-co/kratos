@@ -16,13 +16,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
-	"github.com/ory/dockertest"
+	"github.com/ory/dockertest/v3"
 
-	"github.com/ory/viper"
 	dhelper "github.com/ory/x/sqlcon/dockertest"
 
 	templates "github.com/ory/kratos/courier/template"
-	"github.com/ory/kratos/driver/configuration"
+	"github.com/ory/kratos/driver/config"
 	"github.com/ory/kratos/internal"
 )
 
@@ -98,13 +97,16 @@ func TestSMTP(t *testing.T) {
 	t.Logf("SMTP URL: %s", smtp)
 	t.Logf("API URL: %s", api)
 
-	conf, reg := internal.NewRegistryDefault(t)
-	viper.Set(configuration.ViperKeyCourierSMTPURL, smtp)
-	viper.Set(configuration.ViperKeyCourierSMTPFrom, "test-stub@ory.sh")
+	conf, reg := internal.NewFastRegistryWithMocks(t)
+	conf.MustSet(config.ViperKeyCourierSMTPURL, smtp)
+	conf.MustSet(config.ViperKeyCourierSMTPFrom, "test-stub@ory.sh")
 	c := reg.Courier()
 
+	ctx, cancel := context.WithCancel(context.Background())
+
+	defer cancel()
 	go func() {
-		require.NoError(t, c.Work(context.Background()))
+		require.NoError(t, c.Work(ctx))
 	}()
 
 	t.Run("case=queue messages", func(t *testing.T) {

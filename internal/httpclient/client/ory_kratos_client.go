@@ -6,16 +6,14 @@ package client
 // Editing this file might prove futile when you re-run the swagger generate command
 
 import (
-	httptransport "github.com/go-openapi/runtime/client"
-
 	"github.com/go-openapi/runtime"
+	httptransport "github.com/go-openapi/runtime/client"
 	"github.com/go-openapi/strfmt"
 
-	"github.com/ory/kratos/internal/httpclient/client/admin"
-	"github.com/ory/kratos/internal/httpclient/client/common"
-	"github.com/ory/kratos/internal/httpclient/client/health"
-	"github.com/ory/kratos/internal/httpclient/client/public"
-	"github.com/ory/kratos/internal/httpclient/client/version"
+	"github.com/ory/kratos-client-go/client/admin"
+	"github.com/ory/kratos-client-go/client/health"
+	"github.com/ory/kratos-client-go/client/public"
+	"github.com/ory/kratos-client-go/client/version"
 )
 
 // Default ory kratos HTTP client.
@@ -61,7 +59,6 @@ func New(transport runtime.ClientTransport, formats strfmt.Registry) *OryKratos 
 	cli := new(OryKratos)
 	cli.Transport = transport
 	cli.Admin = admin.New(transport, formats)
-	cli.Common = common.New(transport, formats)
 	cli.Health = health.New(transport, formats)
 	cli.Public = public.New(transport, formats)
 	cli.Version = version.New(transport, formats)
@@ -111,8 +108,6 @@ func (cfg *TransportConfig) WithSchemes(schemes []string) *TransportConfig {
 type OryKratos struct {
 	Admin admin.ClientService
 
-	Common common.ClientService
-
 	Health health.ClientService
 
 	Public public.ClientService
@@ -126,7 +121,6 @@ type OryKratos struct {
 func (c *OryKratos) SetTransport(transport runtime.ClientTransport) {
 	c.Transport = transport
 	c.Admin.SetTransport(transport)
-	c.Common.SetTransport(transport)
 	c.Health.SetTransport(transport)
 	c.Public.SetTransport(transport)
 	c.Version.SetTransport(transport)

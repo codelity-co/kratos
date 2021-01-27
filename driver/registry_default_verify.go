@@ -2,16 +2,17 @@ package driver
 
 import (
 	"github.com/ory/kratos/identity"
-	"github.com/ory/kratos/selfservice/flow/verify"
+	"github.com/ory/kratos/selfservice/flow/verification"
+	"github.com/ory/kratos/selfservice/strategy/link"
 )
 
-func (m *RegistryDefault) VerificationPersister() verify.Persister {
+func (m *RegistryDefault) VerificationFlowPersister() verification.FlowPersister {
 	return m.persister
 }
 
-func (m *RegistryDefault) VerificationRequestErrorHandler() *verify.ErrorHandler {
+func (m *RegistryDefault) VerificationFlowErrorHandler() *verification.ErrorHandler {
 	if m.selfserviceVerifyErrorHandler == nil {
-		m.selfserviceVerifyErrorHandler = verify.NewErrorHandler(m, m.c)
+		m.selfserviceVerifyErrorHandler = verification.NewErrorHandler(m)
 	}
 
 	return m.selfserviceVerifyErrorHandler
@@ -19,24 +20,24 @@ func (m *RegistryDefault) VerificationRequestErrorHandler() *verify.ErrorHandler
 
 func (m *RegistryDefault) VerificationManager() *identity.Manager {
 	if m.selfserviceVerifyManager == nil {
-		m.selfserviceVerifyManager = identity.NewManager(m, m.c)
+		m.selfserviceVerifyManager = identity.NewManager(m)
 	}
 
 	return m.selfserviceVerifyManager
 }
 
-func (m *RegistryDefault) VerificationHandler() *verify.Handler {
+func (m *RegistryDefault) VerificationHandler() *verification.Handler {
 	if m.selfserviceVerifyHandler == nil {
-		m.selfserviceVerifyHandler = verify.NewHandler(m, m.c)
+		m.selfserviceVerifyHandler = verification.NewHandler(m)
 	}
 
 	return m.selfserviceVerifyHandler
 }
 
-func (m *RegistryDefault) VerificationSender() *verify.Sender {
-	if m.selfserviceVerifySender == nil {
-		m.selfserviceVerifySender = verify.NewSender(m, m.c)
+func (m *RegistryDefault) LinkSender() *link.Sender {
+	if m.selfserviceLinkSender == nil {
+		m.selfserviceLinkSender = link.NewSender(m)
 	}
 
-	return m.selfserviceVerifySender
+	return m.selfserviceLinkSender
 }

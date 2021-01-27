@@ -1,5 +1,18 @@
 package form
 
+import "github.com/ory/kratos/text"
+
+type Form interface {
+	ErrorParser
+	FieldSetter
+	ValueSetter
+	FieldUnsetter
+	MessageAdder
+	CSRFSetter
+	Resetter
+	FieldSorter
+}
+
 // ErrorParser is capable of parsing and processing errors.
 type ErrorParser interface {
 	// ParseError type asserts the given error and sets the forms's errors or a
@@ -13,14 +26,20 @@ type FieldSetter interface {
 	SetField(field Field)
 }
 
+type FieldUnsetter interface {
+	// UnsetFields removes a field from the form.
+	UnsetField(name string)
+}
+
 type ValueSetter interface {
 	// SetValue sets a value of the form.
 	SetValue(name string, value interface{})
 }
 
-type ErrorAdder interface {
-	// AddError adds an error to the form.
-	AddError(err *Error, names ...string)
+type MessageAdder interface {
+	// AddMessage adds a message to the form. A message can also be set for one or more fields if
+	// `setForFields` is set.
+	AddMessage(err *text.Message, setForFields ...string)
 }
 
 type CSRFSetter interface {
@@ -29,10 +48,15 @@ type CSRFSetter interface {
 }
 
 type Resetter interface {
-	// Reset resets errors.
-	Reset()
+	// Resets the form or field.
+	Reset(exclude ...string)
+}
+
+type MessageResetter interface {
+	// ResetMessages resets the form's or field's messages..
+	ResetMessages(exclude ...string)
 }
 
 type FieldSorter interface {
-	SortFields(schemaRef string, prefix string) error
+	SortFields(schemaRef string) error
 }
