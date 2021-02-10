@@ -10,8 +10,6 @@ import (
 
 	"github.com/ory/kratos/driver/config"
 
-	"github.com/ory/x/stringsx"
-
 	"github.com/rs/cors"
 
 	"github.com/ory/kratos/metrics/prometheus"
@@ -75,14 +73,7 @@ func ServePublic(r driver.Registry, wg *sync.WaitGroup, cmd *cobra.Command, args
 	}
 
 	router := x.NewRouterPublic()
-	csrf := x.NewCSRFHandler(
-		router,
-		r.Writer(),
-		l,
-		stringsx.Coalesce(c.SelfPublicURL().Path, "/"),
-		c.SelfPublicURL().Hostname(),
-		!c.IsInsecureDevMode(),
-	)
+	csrf := x.NewCSRFHandler(router, r)
 
 	n.UseFunc(x.CleanPath) // Prevent double slashes from breaking CSRF.
 	r.WithCSRFHandler(csrf)
@@ -91,6 +82,7 @@ func ServePublic(r driver.Registry, wg *sync.WaitGroup, cmd *cobra.Command, args
 	r.RegisterPublicRoutes(router)
 	n.Use(reqlog.NewMiddlewareFromLogger(l, "public#"+c.SelfPublicURL().String()))
 	n.Use(sqa(cmd, r))
+	n.Use(r.PrometheusManager())
 
 	if tracer := r.Tracer(cmd.Context()); tracer.IsLoaded() {
 		n.Use(tracer)
@@ -225,7 +217,7 @@ func bgTasks(d driver.Registry, wg *sync.WaitGroup, cmd *cobra.Command, args []s
 
 	d.Logger().Println("Courier worker started.")
 	if err := graceful.Graceful(func() error {
-		return d.Courier().Work(ctx)
+		return d.Courier(ctx).Work(ctx)
 	}, func(_ cx.Context) error {
 		cancel()
 		return nil

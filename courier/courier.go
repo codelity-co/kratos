@@ -23,14 +23,14 @@ type (
 	smtpDependencies interface {
 		PersistenceProvider
 		x.LoggingProvider
+		config.Provider
 	}
 	Courier struct {
 		Dialer *gomail.Dialer
 		d      smtpDependencies
-		c      *config.Config
 	}
 	Provider interface {
-		Courier() *Courier
+		Courier(ctx context.Context) *Courier
 	}
 )
 
@@ -50,7 +50,6 @@ func NewSMTP(d smtpDependencies, c *config.Config) *Courier {
 
 	return &Courier{
 		d: d,
-		c: c,
 		Dialer: &gomail.Dialer{
 			/* #nosec we need to support SMTP servers without TLS */
 			TLSConfig:    tlsConfig,
@@ -130,7 +129,7 @@ func (m *Courier) watchMessages(ctx context.Context, errChan chan error) {
 
 				switch msg.Type {
 				case MessageTypeEmail:
-					from := m.c.CourierSMTPFrom()
+					from := m.d.Config(ctx).CourierSMTPFrom()
 					gm := gomail.NewMessage()
 					gm.SetHeader("From", from)
 					gm.SetHeader("To", msg.Recipient)
@@ -146,6 +145,12 @@ func (m *Courier) watchMessages(ctx context.Context, errChan chan error) {
 							// WithField("email_to", msg.Recipient).
 							WithField("message_from", from).
 							Error("Unable to send email using SMTP connection.")
+						if err := m.d.CourierPersister().SetMessageStatus(ctx, msg.ID, MessageStatusQueued); err != nil {
+							m.d.Logger().
+								WithError(err).
+								WithField("message_id", msg.ID).
+								Error(`Unable to reset the failed message's status to "queued".`)
+						}
 						continue
 					}
 

@@ -60,6 +60,8 @@ New feature or request.
       ([kratos#286](https://github.com/ory/kratos/issues/286))
 - [ ] How to sign in with Twitter
       ([kratos#517](https://github.com/ory/kratos/issues/517))
+- [ ] login ui returned without flowid
+      ([kratos#1055](https://github.com/ory/kratos/issues/1055))
 - [x] Implement Security Questions MFA
       ([kratos#469](https://github.com/ory/kratos/issues/469))
 - [x] Double slash in URLs causes CSRF issues
@@ -105,8 +107,6 @@ Something is not working.
 
 - [ ] Unmable to use Auth0 as a generic OIDC provider
       ([kratos#609](https://github.com/ory/kratos/issues/609))
-- [ ] Password reset emails sent twice by each of the two kratos pods in my
-      cluster ([kratos#652](https://github.com/ory/kratos/issues/652))
 - [ ] Investigate why smtps fails but smtp does not
       ([kratos#781](https://github.com/ory/kratos/issues/781)) -
       [@hackerman](https://github.com/aeneasr)
@@ -125,6 +125,8 @@ Something is not working.
       [@hackerman](https://github.com/aeneasr)
 - [x] Sending JSON to complete oidc/password strategy flows causes CSRF issues
       ([kratos#378](https://github.com/ory/kratos/issues/378))
+- [x] Password reset emails sent twice by each of the two kratos pods in my
+      cluster ([kratos#652](https://github.com/ory/kratos/issues/652))
 - [x] Building From Source fails
       ([kratos#711](https://github.com/ory/kratos/issues/711))
 - [x] Quickstart is failing to mount volume kratos.yml when SELinux is enabled
